@@ -1,7 +1,7 @@
 """
-Author: Nicholas J. Calabro
-Copyright 2026
+© 2026 Nicholas J. Calabro. All rights reserved.
 
+Model Training Script
 
 Current Model:
 Custom SimMIM-Pretrained SwinV2 backbone
@@ -38,18 +38,21 @@ from tqdm import tqdm
 from sklearn.metrics import roc_auc_score, roc_curve
 
 from dataset import (
-    make_value_tf, make_train_tf, tta_predict, worker_init_fn,
+    make_value_tf, make_train_tf, worker_init_fn,
     print_dataset_parameters,   
+    init_split, 
     CXR8Dataset,
     ALL_CLASSES
 )
 
 from architecture import (
+    SwinWithView, AsymmetricLoss, UnfreezeScheduler,
+    init_group_cosine, init_param_groups, 
+    print_architecture_parameters, tta_predict
+)
+
+from util import (
     init_device, init_metadata, init_ckpt,
-    init_split, 
-    SwinWithView, AsymmetricLoss,
-    UnfreezeScheduler, init_group_cosine, init_param_groups, 
-    print_architecture_parameters,   
 )
 
 # From Microsoft's Github on SwinV2
@@ -232,11 +235,13 @@ def main():
     train_idx, value_idx = init_split(df, label_matrix=label_matrix)
 
     # Transforms
-    value_tf   = make_value_tf(IMAGE_SIZE)
+    value_tf = make_value_tf(IMAGE_SIZE)
     train_tf = make_train_tf(IMAGE_SIZE)
     
-    train_ds = CXR8Dataset(df, label_matrix, train_idx, train_tf, path_lookup)
-    value_ds   = CXR8Dataset(df, label_matrix, value_idx,   value_tf,   path_lookup)
+    train_ds = CXR8Dataset(
+            df, label_matrix, train_idx, train_tf, path_lookup)
+    value_ds = CXR8Dataset(
+            df, label_matrix, value_idx, value_tf, path_lookup)
     
     # After building train_ds, verify alignment:
     img, lbl, view = train_ds[0]
@@ -284,7 +289,7 @@ def main():
         f"valid sizes: {[SWIN_WINDOW_SIZE * 4 * i for i in range(1, 20) if (SWIN_WINDOW_SIZE * 4 * i) >= 192]}"
     )
 
-    # Model
+    # Initialize Backbone
     base = SwinTransformerV2(
         img_size=IMAGE_SIZE,
         patch_size=4,
@@ -304,6 +309,7 @@ def main():
         use_checkpoint=False,
     )
 
+    # Initialize Head
     model = SwinWithView(backbone=base, num_classes=NUM_CLASSES).to(device)
 
     if torch.cuda.device_count() > 1:
@@ -333,11 +339,9 @@ def main():
                                     schedule=UNFREEZE_SCHEDULE)
 
 
-
     optimizer = torch.optim.AdamW(param_group, weight_decay=WEIGHT_DECAY)    
 
    
-    # scaler = GradScaler(device="cuda")
     criterion = AsymmetricLoss(
         gamma_pos=GAMMA_POS,
         gamma_neg=GAMMA_NEG,
@@ -417,8 +421,10 @@ def main():
                 # Still log it, just don't include in mean
                 per_class_auc[ALL_CLASSES[c]] = round(roc_auc_score(col, probs[:, c]), 3)
         
-        temps = raw_model.stage_temps.abs().detach().cpu().numpy()
-        print(f"  stage_temps (abs): {np.round(temps, 3)}")
+        gates = torch.sigmoid(raw_model.stage_gates).detach().cpu().numpy()
+        final_temp = raw_model.stage_temps[0].abs().item()
+        print(f"  stage_gates (early): {np.round(gates, 3)}")
+        print(f"  stage_temp  (final): {round(final_temp, 3)}")
         
         return avg_loss, np.mean(aucs), per_class_auc, probs, labels
 
@@ -546,6 +552,8 @@ def main():
     thresholds = ckpt["thresholds"]
 
     print("view_scale:", torch.sigmoid(m.view_scale).item() * 2.0)
+    print("End time: ", datetime.datetime.now())
+
 
 
 if __name__ == "__main__":
