@@ -1,17 +1,22 @@
 """
-Author: Nicholas J. Calabro
-Computing for Health and Medicine
-Group 5
-Coyyright 2026
+© 2026 Nicholas J. Calabro. All rights reserved.
+
+Dataset and Augmentation
+- CXR8Dataset: PyTorch Dataset class for NIH CXR8
+- make_train_tf: Creates the training augmentation pipeline
+- make_value_tf: Creates the validation/test augmentation pipeline
+- init_split: Splits the dataset into training and validation sets,
+        ensuring patient-level separation and stratification
+    
+
 """
-import os
-import glob
+
 import numpy as np
 import pandas as pd
 from PIL import Image
+from sklearn.model_selection import StratifiedShuffleSplit
 import torch
 from torch.utils.data import Dataset
-from torchvision import transforms
 import cv2
 from PIL import Image, ExifTags
 import albumentations as A
@@ -63,49 +68,6 @@ class PerImageStandardize(object):
         std = x.std()
         return (x - mean) / (std + 1e-6)
     
-def tta_predict(model, imgs, views):
-    p1 = torch.sigmoid(model(imgs, views))
-    p2 = torch.sigmoid(model(imgs.flip(-1), views))
-    return (p1 + p2) / 2
-
-# Unused in current pipeline, but could be used for more aggressive contrast enhancement
-class CLAHETransform:
-    def __init__(self, clip_limit, tile_grid_size):
-        self.clip_limit = clip_limit
-        self.tile_grid_size = tile_grid_size
-        self._clahe = None
-
-    def _get_clahe(self):
-        if self._clahe is None:
-            self._clahe = cv2.createCLAHE(
-                clipLimit=self.clip_limit,
-                tileGridSize=self.tile_grid_size
-            )
-        return self._clahe
-
-    def __getstate__(self):
-        # Called when pickling - drop the unpicklable cv2 object
-        state = self.__dict__.copy()
-        state['_clahe'] = None
-        return state
-
-    def __setstate__(self, state):
-        # Called when unpickling in each worker - restore without cv2 object
-        self.__dict__.update(state)
-
-    def __call__(self, img):
-        clahe = self._get_clahe()
-        img_np = (img.numpy() * 255).astype("uint8")
-        img_np = np.transpose(img_np, (1, 2, 0))
-
-        out = []
-        for c in range(img_np.shape[2]):
-            out.append(clahe.apply(img_np[:, :, c]))
-
-        out = np.stack(out, axis=2)
-        out = np.transpose(out, (2, 0, 1))
-        out = out.astype("float32") / 255.0
-        return torch.from_numpy(out)
 
 
 ### Transformer Creation ###
@@ -114,18 +76,22 @@ def make_value_tf(size):
         A.Resize(size, size),
         A.CLAHE(
             clip_limit=CLAHE_CLIP_LIMIT,
-            tile_grid_size=(CLAHE_TILE_GRID_SIZE,CLAHE_TILE_GRID_SIZE),
+            tile_grid_size=(CLAHE_TILE_GRID_SIZE, CLAHE_TILE_GRID_SIZE),
             p=CLAHE_PROB
         ),
         ToTensorV2(),
     ])
 
-
+# Flip, rotate, elastic transform,
+# grid distortion, color jitter, coarse dropout
 def make_train_tf(size):
     return A.Compose([
         A.Resize(size, size),
         A.HorizontalFlip(p=HORIZONTAL_FLIP_PROB),
-        A.Rotate(limit=ROTATION_DEGREES, p=ROTATION_PROB, interpolation=cv2.INTER_LINEAR),
+        A.Rotate(
+            limit=ROTATION_DEGREES,
+            p=ROTATION_PROB,
+            interpolation=cv2.INTER_LINEAR),
         A.CLAHE(
             clip_limit=CLAHE_CLIP_LIMIT,
             tile_grid_size=(CLAHE_TILE_GRID_SIZE, CLAHE_TILE_GRID_SIZE),
@@ -139,7 +105,11 @@ def make_train_tf(size):
             p=ELASTIC_PROB
         ),
         A.GridDistortion(num_steps=5, distort_limit=0.05, p=0.3),
-        A.ColorJitter(brightness=JITTER_BRIGHTNESS, contrast=JITTER_CONTRAST, p=JITTER_PROB),
+        A.ColorJitter(
+            brightness=JITTER_BRIGHTNESS,
+            contrast=JITTER_CONTRAST,
+            p=JITTER_PROB
+        ),
         
         A.CoarseDropout(
             num_holes_range=(1, 8),
@@ -174,7 +144,40 @@ class CXR8Dataset(Dataset):
         return img, lbl, view_id
 
 
-### Helper functions ###
+# Split at patient level so value set doesn't see patients from training set
+def init_split(df, label_matrix):
+    patient_ids = df["Patient ID"].unique()
+
+    patient_label_matrix = np.zeros((len(patient_ids), len(ALL_CLASSES)), dtype=int)
+    patient_id_to_idx = {pid: i for i, pid in enumerate(patient_ids)}
+    for img_idx, row in df.iterrows():
+        p = patient_id_to_idx[row["Patient ID"]]
+        patient_label_matrix[p] |= label_matrix[img_idx]
+
+    # Collapse multilabel to a single stratification key via label combination hash
+    # Rare combos get lumped into a single "other" bin to avoid singleton strata
+    combo_strings = ["_".join(map(str, row)) for row in patient_label_matrix]
+    from collections import Counter
+    counts = Counter(combo_strings)
+    MIN_COMBO_COUNT = 2
+    strat_labels = [c if counts[c] >= MIN_COMBO_COUNT else "__other__" for c in combo_strings]
+
+    sss = StratifiedShuffleSplit(n_splits=1, test_size=0.15, random_state=42)
+    train_patient_idx, val_patient_idx = next(sss.split(patient_ids, strat_labels))
+
+    train_patients = set(patient_ids[train_patient_idx])
+    value_patients = set(patient_ids[val_patient_idx])
+
+    train_idx = df[df["Patient ID"].isin(train_patients)].index.to_numpy()
+    value_idx = df[df["Patient ID"].isin(value_patients)].index.to_numpy()
+
+    for split_name, idx in [("train", train_idx), ("val", value_idx)]:
+        n_hernia = label_matrix[idx, ALL_CLASSES.index("Hernia")].sum()
+        print(f"{split_name} Hernia positives: {n_hernia}")
+
+    return train_idx, value_idx
+
+
 def print_dataset_parameters():
     print("Dataset Parameters:")
     print("  CLAHE_CLIP_LIMIT", CLAHE_CLIP_LIMIT)

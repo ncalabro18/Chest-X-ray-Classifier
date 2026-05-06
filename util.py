@@ -1,79 +1,101 @@
-import cv2
-import numpy as np
-
-from dataset import (
-    ROTATION_DEGREES, ROTATION_PROB, AFFINE_TRANSLATION, CLAHE_PROB,
-    CLIP_LIMIT, IMAGENET_MEAN, IMAGENET_STD, JITTER_BRIGHTNESS,
-    JITTER_CONTRAST, NIH_CXR8_CUSTOM_MEAN, NIH_CXR8_CUSTOM_STD,
-    TILE_GRID_SIZE
-)
-
-from train import (
-    BASE_LR, BATCH_SIZE_TRAIN, BATCH_SIZE_VAL,
-    CLASSIFIER_DROPOUT, FEATURE_DROPOUT, HARDWARE_PITY, IMAGE_ROOT,
-    LR_LAYER_DECAY, METADATA_CSV_PATH, MODEL_OUTPUT_FILE,
-    NUM_EPOCHS, PATIENCE, PERSISTENT_WORKERS, PREFETECH_FACTOR,
-    SAMPLER_POWER, SSL_CKPT, LOADER_WORKERS_TRAIN,
-    UNFREEZE_SCHEDULE, LOADER_WORKERS_VALUE, WARMUP_END_FACTOR,
-    WARMUP_EPOCHS, WARMUP_START_FACTOR, WEIGHT_DECAY
-)
+"""
+© 2026 Nicholas J. Calabro. All rights reserved.
 
 
+Extra Utility Functions
+- init_metadata: Loads and processes the metadata CSV,
+        extracting labels and view positions
+- init_ckpt: Loads a checkpoint file,
+        handling both training and SSL formats
+- init_device: Sets up the PyTorch device,
+        preferring GPU if available,
+        and prints device info
 
 """
-Normalize orientation of a CXR image using:
-- EXIF orientation (if present)
-- Pixel-based heuristics (heart-side, diaphragm, ribs)
-- Lateral detection (remove laterals)
-Input: PIL Image (grayscale or RGB)
-Output: PIL Image or None (if lateral)
-"""
-def normalize_cxr_image(img):
-    # PIL operations first
-    if img.mode != "L":
-        img = img.convert("L")
+import torch
+import pandas as pd
 
-    # Fix EXIF orientation (best-effort, rare on CXRs)
-    try:
-        exif = img._getexif()
-        if exif is not None:
-            orientation_key = next(k for k, v in ExifTags.TAGS.items() if v == "Orientation")
-            orientation = exif.get(orientation_key)
-            rotations = {3: 180, 6: 270, 8: 90}
-            if orientation in rotations:
-                img = img.rotate(rotations[orientation], expand=True)
-    except Exception:
-        pass
+# Check point file labels that aren't required
+EXPECTED_MISSING = {
+    "relative_coords_table",
+    "relative_position_index",
+    "attn_mask"
+}
 
-    # Convert to numpy once
-    arr = np.array(img)
-    h, w = arr.shape
+# Extracts labels and view_ids, and filters to PA/AP images only
+def init_metadata(path):
+    df = pd.read_csv(path)
+    df = df[["Image Index", "Finding Labels",
+             "View Position", "Patient ID"]].copy()
+    df["view_id"] = df["View Position"].map({"PA": 0, "AP": 1}).fillna(0).astype(int)
+    df = df[df["View Position"].isin(["PA", "AP"])].reset_index(drop=True)
+    df["labels"] = df["Finding Labels"].str.split("|")
+    
+    return df
 
-    # Lateral detection
-    left_edge  = arr[:, :int(w * 0.15)].mean()
-    right_edge = arr[:, int(w * 0.85):].mean()
-    if max(left_edge, right_edge) > arr.mean() * 1.35:
-        return None  # handle None in __getitem__
+# Loads the SSL checkpoint from the path SSL_CKPT
+def init_ckpt(model, path):
+    raw = torch.load(path, map_location="cpu", weights_only=False)
 
-    # Upside-down detection (diaphragm should be brighter at bottom)
-    if arr[:h//3].mean() > arr[-h//3:].mean() * 1.10:
-        arr = np.flipud(arr)
+    if not isinstance(raw, dict):
+        raise ValueError(f"Unexpected checkpoint format: {type(raw)}")
 
-    # Rib gradient check (after upright correction)
-    arr_f = arr.astype(np.float32)
-    sobel_y    = cv2.Sobel(arr_f, cv2.CV_32F, 0, 1, ksize=5)
-    top_grad   = np.abs(sobel_y[:h//2]).mean()
-    bottom_grad = np.abs(sobel_y[h//2:]).mean()
-    if top_grad < bottom_grad * 0.85:
-        arr = np.flipud(arr)
+    # Unwrap outer dict if present
+    state = raw.get("model", raw)
 
-    return arr.astype(np.uint8)
-    # return Image.fromarray(arr.astype(np.uint8))
+    sample_keys = list(state.keys())[:6]
+    print("State dict sample keys:", sample_keys)
 
-def fix_rotation(img):
-    w, h = img.size
-    if w > h:
-        img = img.rotate(90, expand=True)
-    return img
+    # Discriminate: training checkpoints (SwinWithView) have backbone.* keys
+    # SSL/SimMIM checkpoints have bare patch_embed.*, layers.* keys
+    is_training_ckpt = any(k.startswith("backbone.") for k in state.keys())
 
+    if is_training_ckpt:
+        print("Detected training checkpoint, loading full SwinWithView state")
+        model.load_state_dict(state)
+        return raw.get("epoch", None), raw.get("best_val", None)
 
+    # SSL checkpoint - strip encoder prefix if present (some SimMIM releases use it)
+    if any(k.startswith("encoder.") for k in state):
+        print("Stripping 'encoder.' prefix")
+        state = {k[len("encoder."):]: v
+                 for k, v in state.items()
+                 if k.startswith("encoder.")}
+
+    ckpt = {
+        k.replace("rpe_mlp", "cpb_mlp"): v
+        for k, v in state.items()
+        if "relative_coords_table" not in k
+        and "relative_position_index" not in k
+        and "attn_mask" not in k
+        and k not in ("head.weight", "head.bias")
+    }
+
+    missing, unexpected = model.backbone.load_state_dict(ckpt, strict=False)
+    unexpected_missing = [k for k in missing if not any(tag in k for tag in EXPECTED_MISSING)]
+
+    if unexpected_missing:
+        print(f"WARNING: {len(unexpected_missing)} unexpected missing keys:")
+        for k in unexpected_missing:
+            print(f"  {k}")
+    else:
+        print(f"SSL checkpoint loaded OK - {len(missing)} expected missing, {len(unexpected)} unexpected")
+
+    return None, None
+
+# Use GPU if available
+# Displays device info and clears cache to avoid fragmentation issues
+def init_device():
+    torch.cuda.empty_cache()
+    torch.cuda.ipc_collect()
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print("CUDA available:", torch.cuda.is_available())
+    print("Device count:", torch.cuda.device_count())
+    for i in range(torch.cuda.device_count()):
+        print(f"  [{i}]", torch.cuda.get_device_name(i))
+    print("Using device:", device)
+    print("**Device: ", device)
+    print(torch.cuda.get_device_capability())
+    torch.backends.cudnn.benchmark = True
+
+    return device
