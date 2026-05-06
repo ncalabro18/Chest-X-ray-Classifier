@@ -4,29 +4,72 @@ import matplotlib.pyplot as plt
 
 import torch
 import numpy as np
+import argparse
+import cv2
+from PIL import Image
 
-from dataset import ALL_CLASSES
+from architecture import SwinWithView, init_device
+from swin_transformer_v2 import SwinTransformerV2
+from train_save import IMAGE_SIZE, MODEL_OUTPUT_FILE
+from dataset import ALL_CLASSES, make_value_tf, PerImageStandardize
 
+SAVE_PATH = "visualization.png"
+
+def print_visualization_parameters():
+    print("Visualization parameters:")
+    print(f"  SAVE_PATH: {SAVE_PATH}")
 
 
 def get_class_attention(model, img_tensor, class_idx, device, view_id=0):
+    """
+    Replicates the multi-scale cross-attention from SwinWithView.forward()
+    and returns the per-token attention weight for class_idx reshaped to a 2D map.
+
+    Because tokens come from 4 scales concatenated, we return only the
+    final-stage slice of the attention map (highest semantic resolution)
+    which aligns with GradCAM's spatial grid for easy comparison.
+    """
     model.eval()
     with torch.no_grad():
-        feats = model.backbone.forward_features(img_tensor.unsqueeze(0).to(device))
-        view_id = torch.tensor([view_id], dtype=torch.long, device=device)
-        v = model.view_mlp(model.view_embed(view_id))
-        gamma, beta = v.chunk(2, dim=-1)
-        scale = torch.sigmoid(model.view_scale) * 2.0
-        feats = feats * (1 + scale * gamma.unsqueeze(1)) + beta.unsqueeze(1)
+        x = img_tensor.unsqueeze(0).to(device)
+        x = model.backbone.patch_embed(x)
+        if model.backbone.ape:
+            x = x + model.backbone.absolute_pos_embed
+        x = model.backbone.pos_drop(x)
 
-        normed = model.attn_pool.norm(feats)
-        attn = model.attn_pool.query(normed)                            # (1, N, num_classes)
-        attn = torch.softmax(attn / model.attn_pool.temp.clamp(min=0.1), dim=1)
-        attn_map = attn[0, :, class_idx]                                # (N,)
+        early_feats = []
+        for i, layer in enumerate(model.backbone.layers):
+            x = layer(x)
+            if i < len(model.backbone.layers) - 1:
+                early_feats.append(x)
 
-    H = W = int(attn_map.shape[0] ** 0.5)
-    return attn_map.reshape(H, W).cpu().numpy()
+        # Track token counts per stage so we can slice later
+        token_counts = [f.shape[1] for f in early_feats]
 
+        stage_tokens = []
+        for feat, proj in zip(early_feats, model.stage_projs):
+            B, N, D = feat.shape
+            h = w = int(N ** 0.5)
+            feat_2d = feat.reshape(B, h, w, D).permute(0, 3, 1, 2)
+            stage_tokens.append(proj(feat_2d).flatten(2).transpose(1, 2))
+
+        x_normed = model.backbone.norm(x)
+        x_normed = model.class_norm(x_normed)
+        N_final = x_normed.shape[1]
+
+        all_tokens = torch.cat([*stage_tokens, x_normed], dim=1)    # (1, N_total, C)
+
+        q = model.class_queries[class_idx]                           # (C,)
+        attn = (all_tokens @ q) * model.attn_scale                  # (1, N_total)
+        attn = torch.softmax(attn, dim=-1).squeeze(0)               # (N_total,)
+
+        # Slice out only the final-stage attention weights for the 2D map
+        final_stage_attn = attn[-N_final:]                           # (N_final,)
+
+    H = W = int(N_final ** 0.5)
+    attn_map = final_stage_attn.reshape(H, W).cpu().numpy()
+    attn_map = (attn_map - attn_map.min()) / (attn_map.max() + 1e-8)
+    return attn_map
 
 class GradCAM:
     """
@@ -100,7 +143,7 @@ def overlay_heatmap(img_np, heatmap_hw, alpha=0.45, colormap=cv2.COLORMAP_JET):
 
 
 def visualize_class(model, img_tensor, img_np, class_idx, device,
-                    gradcam: GradCAM, view_id=0, save_path=None):
+                    gradcam: GradCAM, view_id=0, save_path=SAVE_PATH):
     """
     Side-by-side: original | GradCAM | attention map
     img_tensor : (3, H, W) torch tensor (normalised)
@@ -144,4 +187,129 @@ def visualize_class(model, img_tensor, img_np, class_idx, device,
         plt.savefig(save_path, dpi=150, bbox_inches="tight")
     plt.show()
 
+
+def load_model(ckpt_path, device):
+    base = SwinTransformerV2(
+        img_size=IMAGE_SIZE,
+        patch_size=4,
+        in_chans=3,
+        embed_dim=96,
+        depths=[2, 2, 18, 2],
+        num_heads=[3, 6, 12, 24],
+        window_size=12,
+        mlp_ratio=4.0,
+        qkv_bias=True,
+        drop_rate=0.0,
+        attn_drop_rate=0.0,
+        drop_path_rate=0.2,
+        ape=False,
+        patch_norm=True,
+        use_checkpoint=False,
+    )
+    model = SwinWithView(backbone=base, num_classes=len(ALL_CLASSES)).to(device)
+
+    print(f"Loading checkpoint: '{ckpt_path}'")
+
+    ckpt = torch.load(ckpt_path, map_location=device, weights_only=False)
+    model.load_state_dict(ckpt["model"])
+    thresholds = ckpt.get("thresholds", np.full(len(ALL_CLASSES), 0.5))
+
+    print(f"Thresholds: {np.round(thresholds, 3)}")
+    return model, thresholds
+
+
+def load_image(img_path):
+    """
+    Replicates the CXR8Dataset __getitem__ pipeline exactly:
+      PIL RGB -> numpy -> albumentations -> /255.0 -> PerImageStandardize
+
+    Returns:
+      img_tensor : (3, H, W) float32 torch tensor, standardized
+      img_np     : (H, W) uint8 grayscale, for overlay display
+    """
+    pil = Image.open(img_path).convert("RGB")
+    img_np_rgb = np.array(pil)                          # (H, W, 3) uint8
+
+    tf = make_value_tf(IMAGE_SIZE)
+    img_tensor = tf(image=img_np_rgb)["image"]          # (3, H, W) uint8 torch
+    img_tensor = img_tensor.float() / 255.0
+    img_tensor = PerImageStandardize()(img_tensor)      # (3, H, W) float32
+
+    # Grayscale for overlay (after resize so it matches the heatmap resolution)
+    img_resized = cv2.resize(img_np_rgb, (IMAGE_SIZE, IMAGE_SIZE))
+    img_gray    = cv2.cvtColor(img_resized, cv2.COLOR_RGB2GRAY)  # (H, W) uint8
+
+    return img_tensor, img_gray
+
+
+def run_visualization(model, device, img_tensor, img_np, class_indices, view_id, save_prefix):
+    gradcam = GradCAM(model, device)
+    try:
+        for class_idx in class_indices:
+            class_name = ALL_CLASSES[class_idx]
+            save_path  = f"{save_prefix}_{class_name.replace(' ', '_')}.png"
+            print(f"  [{class_idx}] {class_name} -> {save_path}")
+            visualize_class(
+                model=model,
+                img_tensor=img_tensor,
+                img_np=img_np,
+                class_idx=class_idx,
+                device=device,
+                gradcam=gradcam,
+                view_id=view_id,
+                save_path=save_path,
+            )
+    finally:
+        gradcam.remove()
+
+
+def main():
+    parser = argparse.ArgumentParser(description="GradCAM + attention visualization for chest X-ray")
+    parser.add_argument("image",
+        help="Path to input PNG/JPG")
+    parser.add_argument("--classes", nargs="+", type=int, default=None,
+        help="Class indices to visualize. Defaults to top-3 predicted.")
+    parser.add_argument("--view", type=int, choices=[0, 1], default=0,
+        help="View position: 0=PA, 1=AP (default: 0)")
+    parser.add_argument("--ckpt", default=MODEL_OUTPUT_FILE,
+        help=f"Checkpoint path (default: {MODEL_OUTPUT_FILE})")
+    parser.add_argument("--save-prefix", default="visualization",
+        help="Output filename prefix; class name appended per file")
+    args = parser.parse_args()
+
+    device       = init_device()
+    model, thresholds = load_model(args.ckpt, device)
+    model.eval()
+
+    img_tensor, img_np = load_image(args.image)
+
+    if args.classes is not None:
+        class_indices = args.classes
+    else:
+        with torch.no_grad():
+            view_id = torch.tensor([args.view], dtype=torch.long, device=device)
+            logits  = model(img_tensor.unsqueeze(0).to(device), view_id)
+            probs   = torch.sigmoid(logits).squeeze(0).cpu().numpy()
+
+        predicted = np.where(probs > thresholds)[0].tolist()
+
+        if predicted:
+            predicted.sort(key=lambda i: probs[i], reverse=True)
+            class_indices = predicted[:3]
+        else:
+            # Nothing cleared the threshold — fall back to top-3 raw prob
+            class_indices = np.argsort(probs)[::-1][:3].tolist()
+            print("No class exceeded threshold; showing top-3 by raw probability.")
+
+        print("Classes:      ", [ALL_CLASSES[i] for i in class_indices])
+        print("Probabilities:", {ALL_CLASSES[i]: round(float(probs[i]), 3) for i in class_indices})
+        print("Thresholds:   ", {ALL_CLASSES[i]: round(float(thresholds[i]), 3) for i in class_indices})
+
+    run_visualization(model, device, img_tensor, img_np,
+                      class_indices, args.view, args.save_prefix)
+    print("Done.")
+
+
+if __name__ == "__main__":
+    main()
 

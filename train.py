@@ -1,126 +1,137 @@
 """
 Author: Nicholas J. Calabro
-Group 5
-Coyyright 2026
+Copyright 2026
 
 
 Current Model:
+Custom SimMIM-Pretrained SwinV2 backbone
+MLP head including an auxiliary MLP to condition on view position
 
-Pretrained with SimMIM, Microsoft's SwinV2 is used as a backbone.
-The backbone has an unfreeze schedule to give it time to adjust to
-a new dataset.
-
-A MLP is used as the head. 
-
+A WeightedRandomSampler is used to oversample from rare classes
+Asymmetric Loss is used to focus on hard examples and
+prevent overfitting to common classes
 
 
 Note one definite inaccuracy: Hernia has such few entries
-that the value test will not yield a valid result. 
+that the value test will not yield a valid result.
+It is excluded from the mean AUC calculation.
+
+Future improvements could include:
+- including other datasets
+- restricting diseases types to pleural or other subtypes
+- use Google's NIH labels, less noisy but maybe more unbalanced
+
 """
-import csv
 import datetime
-import math
 import os
 import glob
-import sys
 import time
-import cv2
+import csv
 import numpy as np
-import pandas as pd
 
-import torch.nn as nn
+from torch.optim.swa_utils import AveragedModel, get_ema_multi_avg_fn
 import torch
 from torch.utils.data import DataLoader, WeightedRandomSampler
-from torch.optim.swa_utils import AveragedModel, get_ema_multi_avg_fn
-from skmultilearn.model_selection import IterativeStratification
 from sklearn.preprocessing import MultiLabelBinarizer
 from torch.amp import autocast
 from tqdm import tqdm
-from sklearn.metrics import roc_auc_score
-
-
-
+from sklearn.metrics import roc_auc_score, roc_curve
 
 from dataset import (
-    make_value_tf, make_train_tf, worker_init_fn,
+    make_value_tf, make_train_tf, tta_predict, worker_init_fn,
     print_dataset_parameters,   
-    NIH_CXR8_CUSTOM_MEAN, NIH_CXR8_CUSTOM_STD,
-    CLIP_LIMIT, TILE_GRID_SIZE, CXR8Dataset, CLAHETransform,
-    PerImageStandardize, ALL_CLASSES
+    CXR8Dataset,
+    ALL_CLASSES
 )
 
+from architecture import (
+    init_device, init_metadata, init_ckpt,
+    init_split, 
+    SwinWithView, AsymmetricLoss,
+    UnfreezeScheduler, init_group_cosine, init_param_groups, 
+    print_architecture_parameters,   
+)
+
+# From Microsoft's Github on SwinV2
 from swin_transformer_v2 import SwinTransformerV2
-from visualization import GradCAM, visualize_class
+
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 
 
 ### Paths (must resolve to train) ###
-
-# Metadata file
+    
+# Metadata filepath
 METADATA_CSV_PATH = "../chest_xray_dataset/CXR8/Data_Entry_2017_v2020.csv"
 
 # Expects unziped subdirectories containing original png image filenames
 IMAGE_ROOT = "../chest_xray_dataset/CXR8/images_preprocessed"
-# IMAGE_ROOT = "../chest_xray_dataset/CXR8/image"
 
 # Self Supervized Learning Checkpoint filepath
-SSL_CKPT = "../chest_xray_dataset/swinv2_small_1k_500k.pth"
+SSL_CKPT = "simmim_backbone_epoch100.pth"
 
+# Output paths for training data and the best model checkpoint
 MODEL_OUTPUT_FILE = "swin_cxr8_best.pth"
-
+LOG_OUTPUT_FILE   = "training_log.csv"
 
 
 ### Tuning Parameters ###
+
 # Training Control
-NUM_EPOCHS = 65
-PATIENCE = 22
+NUM_EPOCHS = 35
+PATIENCE = 8
 
-# Loss Parameters
-GAMMA_POS  = 0.2
-GAMMA_NEG  = 2.0
-ASYMMETRIC_CLIP = 0.05
-# LABEL_SMOOTH = 0.0
+IMAGE_SIZE = 224
 
+SWIN_WINDOW_SIZE = 7
 
-# BASE_LR = 5e-5
-BASE_LR = 1e-4
+# Learning Rates
+BASE_LR = 7e-5
 # No pretraining for head
 # Multiply the BASE_LR to compensate
-HEAD_LR_MULTIPLIER = 5
 
 LR_LAYER_DECAY = 0.8
 WEIGHT_DECAY = 1e-2
 
+# Asymmetric Loss
+GAMMA_POS  = 0.0
+GAMMA_NEG = 4.0
+ASYMMETRIC_CLIP = 0.05
+
 # Sample extra from low appearing catagories
-# Keep low to not fight ASL
-SAMPLER_POWER = 0.05
+SAMPLER_POWER = 0.17
+
+# Warmup backbone; previously trained
+WARMUP_EPOCHS = 3
+WARMUP_START_FACTOR = 0.3
+WARMUP_END_FACTOR = 1.0
+
+# Relative to each group's base_lr, not global eta_min
+ETA_MIN_RATIO = 0.09
+
+# high decay prevents noise from destabilizing training
+# may underfit if too high
+EMA_DECAY = 0.9995
+
+# Save frequency in epochs
+CHECKPOINT_INTERVAL = 5
 
 
-VIEW_POSITION_SCALE = 0.35
-
-FEATURE_DROPOUT    = 0.05
-CLASSIFIER_DROPOUT = 0.04
-
-# Wait for backbone to unfreeze
-ETA_RATIO = 0.15
-ATTN_WARMUP_EPOCHS = 6
-ATTN_POOL_UNFREEZE_EPOCH = ATTN_WARMUP_EPOCHS
-
-
-
-# Unfreeze the backbone stages slowly
+# column 1: epoch to unfreeze at
+# column 2: layer index to unfreeze
 UNFREEZE_SCHEDULE = {
-    2: 0,
-    4: 1,
-    7: 2,
-    11: 3,
+    2: 3,
+    4: 2,
+    6: 1,
+    8: 0,
 }
+UNFREEZE_WARMUP_EPOCHS = 3
 
-UNFREEZE_WARMUP_EPOCHS = 2
+# Initial warmup factor for newly unfrozen layers,
+# relative to their base_lr
 UNFREEZE_WARMUP_FACTOR = 0.1
-UNFREEZE_BUMP_FACTOR    = 1.6
+# Bump LR for unfrozen layers by the end of its warmup
+UNFREEZE_BUMP_FACTOR = 1.6
 
-EMA_DECAY = 0.9988
 
 # seconds to sleep after training
 # set to 0 if not concerned about hardware overheating
@@ -130,450 +141,71 @@ HARDWARE_PITY = 45
 ### Data Loader Parameters ###
 # Ran without locking when workers were 2 and 2
 # CPU will bottleneck less with higher workers, may deadlock (immediately)
-LOADER_WORKERS_TRAIN = 10
-LOADER_WORKERS_VALUE   = 2
-BATCH_SIZE_VAL = 16
+BATCH_SIZE_VAL   = 16
 BATCH_SIZE_TRAIN = 16
-
 PREFETECH_FACTOR = 2
-PERSISTENT_WORKERS = True
 
-# Minimum number of value needed to evaluate a catagory
+LOADER_WORKERS_TRAIN = 10
+LOADER_WORKERS_VALUE = 2
+PERSISTENT_WORKERS   = True
+
+
+# Minimum number of value needed to evaluate a catagory's AUC
+# to avoid unreliable estimates and early stopping
 MIN_VAL_POSITIVES = 50
 
 
-### Calculated Parameters ###
+### Calculated Constants ###
 NO_FINDING_COL = ALL_CLASSES.index("No Finding")
 NUM_CLASSES = len(ALL_CLASSES)
 
-# Check point file labels that aren't required
-EXPECTED_MISSING = {"relative_coords_table", "relative_position_index", "attn_mask"}
 
 
 # Logging and tuning purposes
 def print_train_parameters():
-    print("METADATA_CSV_PATH", METADATA_CSV_PATH)
-    print("IMAGE_ROOT", IMAGE_ROOT)
-    print("SSL_CKPT", SSL_CKPT)
-    print("MODEL_OUTPUT_FILE", MODEL_OUTPUT_FILE)
-    print("SAMPLER_POWER", SAMPLER_POWER)
-    print("NUM_EPOCHS", NUM_EPOCHS)
-    print("BASE_LR", BASE_LR)
-    print("HEAD_LR_MULTIPLIER", HEAD_LR_MULTIPLIER)
-    print("LR_LAYER_DECAY", LR_LAYER_DECAY)
-    print("PATIENCE", PATIENCE)
-    print("VIEW_POSITION_SCALE", VIEW_POSITION_SCALE)
-    print("ASYMMETRIC_CLIP", ASYMMETRIC_CLIP)
-    print("GAMMA_NEG", GAMMA_NEG)
-    print("GAMMA_POS", GAMMA_POS)
-    # print("LABEL_SMOOTH",LABEL_SMOOTH)
-    print("ATTN_WARMUP_EPOCHS", ATTN_WARMUP_EPOCHS)
-    print("ATTN_POOL_UNFREEZE_EPOCH", ATTN_POOL_UNFREEZE_EPOCH)
-    print("UNFREEZE_WARMUP_EPOCHS", UNFREEZE_WARMUP_EPOCHS)
-    print("UNFREEZE_WARMUP_FACTOR",UNFREEZE_WARMUP_FACTOR)
-    print("UNFREEZE_BUMP_FACTOR",   UNFREEZE_BUMP_FACTOR) 
-    print("WEIGHT_DECAY", WEIGHT_DECAY)
-    print("FEATURE_DROPOUT", FEATURE_DROPOUT)
-    print("CLASSIFIER_DROPOUT", CLASSIFIER_DROPOUT)
-    print("EMA_DECAY", EMA_DECAY)
-    print("ETA_RATIO", ETA_RATIO)
-    print("BATCH_SIZE_VAL", BATCH_SIZE_VAL)
-    print("BATCH_SIZE_TRAIN", BATCH_SIZE_TRAIN)
-    print("HARDWARE_PITY", HARDWARE_PITY)
-    print("UNFREEZE_SCHEDULE", UNFREEZE_SCHEDULE )
-    print("TRAIN_LOADER_WORKERS", LOADER_WORKERS_TRAIN )
-    print("VALUE_LOADER_WORKERS", LOADER_WORKERS_VALUE)
-    print("PREFETECH_FACTOR", PREFETECH_FACTOR)
-    print("PERSISTENT_WORKERS", PERSISTENT_WORKERS)
-    print("MIN_VAL_POSITIVES", MIN_VAL_POSITIVES)
-    print(datetime.datetime.now())
-
-
-def init_metadata(path):
-    df = pd.read_csv(path)
-    df = df[["Image Index", "Finding Labels", "View Position", "Patient ID"]].copy()
-    df = df[df["View Position"].isin(["PA", "AP"])].reset_index(drop=True)
-    
-    # No fillna — if something slipped past the filter above, we want to know
-    df["view_id"] = df["View Position"].map({"PA": 0, "AP": 1})
-    assert df["view_id"].isna().sum() == 0, "Unexpected view positions found after filter"
-    df["view_id"] = df["view_id"].astype(int)
-    
-    df["labels"] = df["Finding Labels"].str.split("|")
-    return df
-
-def init_sampler(label_matrix, train_idx):
-    active_cols = [i for i in range(len(ALL_CLASSES)) if i != NO_FINDING_COL]
-    train_labels_active = label_matrix[train_idx][:, active_cols]
-    class_weights = 1.0 / (train_labels_active.sum(axis=0) + 1e-6)
-    sample_weights = (train_labels_active * class_weights).max(axis=1) ** SAMPLER_POWER
-    sample_weights = np.clip(sample_weights, a_min=sample_weights[sample_weights > 0].min(), a_max=None)
-    sample_weights = sample_weights / sample_weights.mean()
-    return WeightedRandomSampler(weights=sample_weights, num_samples=len(sample_weights), replacement=True)
-
-def init_device():
-    torch.cuda.empty_cache()
-    torch.cuda.ipc_collect()
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print("CUDA available:", torch.cuda.is_available())
-    print("Device count:", torch.cuda.device_count())
-    for i in range(torch.cuda.device_count()):
-        print(f"  [{i}]", torch.cuda.get_device_name(i))
-    print("Using device:", device)
-    print("**Device: ", device)
-    print(torch.cuda.get_device_capability())
-    torch.backends.cudnn.benchmark = True
-
-    return device
-
-
-def init_split(df, label_matrix):
-    patient_ids = df["Patient ID"].unique()
-
-    patient_label_matrix = np.zeros((len(patient_ids), len(ALL_CLASSES)), dtype=int)
-    patient_id_to_idx = {pid: i for i, pid in enumerate(patient_ids)}
-
-    for img_idx, pid in enumerate(df["Patient ID"]):
-        p = patient_id_to_idx[pid]
-        patient_label_matrix[p] |= label_matrix[img_idx]
-
-    # skmultilearn replacement — note it needs a sparse-compatible array
-    stratifier = IterativeStratification(
-        n_splits=2,                        # 2-fold gives one train/val split
-        order=1,
-        sample_distribution_per_fold=[0.15, 0.85],  # val=15%, train=85%
-    )
-    # Returns (larger_fold, smaller_fold) — val is first here
-    val_patient_idx, train_patient_idx = next(
-        stratifier.split(patient_ids.reshape(-1, 1), patient_label_matrix)
-    )
-
-    train_patients = set(patient_ids[train_patient_idx])
-    value_patients = set(patient_ids[val_patient_idx])
-
-    train_idx = df[df["Patient ID"].isin(train_patients)].index.to_numpy()
-    value_idx = df[df["Patient ID"].isin(value_patients)].index.to_numpy()
-
-    for split_name, idx in [("train", train_idx), ("val", value_idx)]:
-        n_hernia = label_matrix[idx, ALL_CLASSES.index("Hernia")].sum()
-        print(f"{split_name} Hernia positives: {n_hernia}")
-
-    return train_idx, value_idx
-
-
-# Loads the SSL checkpoint from the path SSL_CKPT
-def init_ckpt(model, path):
-    ckpt = torch.load(path, map_location="cpu", weights_only=True)
-    ckpt = ckpt["model"]
-
-    # Fix label names
-    ckpt = {
-        k.replace("encoder.", "", 1): v
-        for k, v in ckpt.items()
-        if k.startswith("encoder.") and not k.startswith("encoder.mask_token")
-    }
-    ckpt = {
-        k.replace("rpe_mlp", "cpb_mlp"): v
-        for k, v in ckpt.items()
-    }
-
-    # Drop buffers that are recomputed at init from window_size
-    ckpt = {
-        k: v for k, v in ckpt.items()
-        if "relative_coords_table" not in k
-        and "relative_position_index" not in k
-        and "attn_mask" not in k
-    }
-
-    missing, unexpected = model.backbone.load_state_dict(ckpt, strict=False)
-
-    unexpected_missing = [k for k in missing if not any(tag in k for tag in EXPECTED_MISSING)]
-    if len(unexpected_missing) > 0:
-        print(f"WARNING: {len(unexpected_missing)} unexpected missing keys (expected only buffers):")
-        for k in unexpected_missing:
-            print(f"  {k}")
-
-    # May be source of error if wrong ssl checkpoint file is used
-    print("Loaded SSL checkpoint. Missing:", missing, "Unexpected:", unexpected)
-    
-    # no need to return ckpt, set in load_state_dict
-
-
-
-def layer_unfreeze_epoch(layer_idx, schedule):
-    if layer_idx < 0:
-        return 1
-    for epoch in sorted(schedule.keys()):
-        if schedule[epoch] >= layer_idx:
-            return epoch
-    return 1
-
-
-
-def make_lr_lambda(unfreeze_epoch, base_lr, bump=False):
-    cosine_span = max(NUM_EPOCHS - unfreeze_epoch - UNFREEZE_WARMUP_EPOCHS, 1)
-    peak = UNFREEZE_BUMP_FACTOR if bump else 1.0          # ← only change inside
-
-    def lr_lambda(epoch):
-        e = epoch + 1
-        if e < unfreeze_epoch:
-            return 0.0
-        warmup_frac = (e - unfreeze_epoch) / UNFREEZE_WARMUP_EPOCHS
-        if warmup_frac < 1.0:
-            return UNFREEZE_WARMUP_FACTOR + (peak - UNFREEZE_WARMUP_FACTOR) * warmup_frac
-        cosine_e = e - unfreeze_epoch - UNFREEZE_WARMUP_EPOCHS
-        cos = 0.5 * (1 + math.cos(math.pi * cosine_e / cosine_span))
-        return ETA_RATIO + (peak - ETA_RATIO) * cos
-
-    return lr_lambda
-
-
-
-def verify_label_alignment(df, label_matrix, mlb, sample_indices=None):
-    """
-    Verifies that df and label_matrix are aligned after masking.
-    Raises AssertionError immediately if anything is off.
-    """
-    assert len(df) == len(label_matrix), \
-        f"Length mismatch: df={len(df)}, label_matrix={len(label_matrix)}"
-
-    if sample_indices is None:
-        n = len(df)
-        sample_indices = sorted({0, n//4, n//2, 3*n//4, n-1})
-
-    for i in sample_indices:
-        raw = df.loc[i, "labels"]
-        labels_list = raw.split("|") if isinstance(raw, str) else raw
-        expected = mlb.transform([labels_list])[0]
-        assert np.array_equal(label_matrix[i], expected), \
-            f"Label mismatch at row {i}: got {label_matrix[i]}, expected {expected}"
-
-    print(f"Label alignment verified across {len(sample_indices)} sampled rows.")
-
-
-def verify_dataset_alignment(ds, label_matrix, idx_array):
-    checkpoints = [0, len(ds)//2, len(ds)-1]
-    for check_i in checkpoints:
-        _, lbl, _ = ds[check_i]
-        assert np.array_equal(lbl.numpy(), label_matrix[idx_array[check_i]]), \
-            f"Dataset label mismatch at ds[{check_i}]"
-    print(f"Dataset alignment verified at indices {checkpoints}.")
-
-
-# Loss
-class AsymmetricLoss(nn.Module):
-    def __init__(
-        self,
-        gamma_pos=1.0,
-        gamma_neg=2.0,
-        clip=0.05,
-        eps=1e-8,
-        disable_torch_grad_focal_loss=True,
-    ):
-        super().__init__()
-        self.gamma_pos = gamma_pos
-        self.gamma_neg = gamma_neg
-        self.clip = clip
-        self.eps = eps
-        self.disable_torch_grad_focal_loss = disable_torch_grad_focal_loss
-        mask = torch.ones(NUM_CLASSES)
-        mask[NO_FINDING_COL] = 0.0
-        self.register_buffer("loss_mask", mask)
-
-    def forward(self, logits, targets):
-        # Sigmoid
-        probs = torch.sigmoid(logits)
-
-        # Positive / negative probabilities
-        xs_pos = probs
-        xs_neg = 1 - probs
-
-        # Asymmetric clipping (ONLY negatives)
-        if self.clip is not None and self.clip > 0:
-            xs_neg = (xs_neg + self.clip).clamp(max=1)
-
-        # Log terms
-        log_pos = torch.log(xs_pos.clamp(min=self.eps))
-        log_neg = torch.log(xs_neg.clamp(min=self.eps))
-
-        # Basic CE loss
-        loss = targets * log_pos + (1 - targets) * log_neg
-        loss = loss * self.loss_mask
-
-
-        # Asymmetric focusing
-        if self.gamma_pos > 0 or self.gamma_neg > 0:
-            if self.disable_torch_grad_focal_loss:
-                with torch.no_grad():
-                    pt_pos = xs_pos * targets
-                    pt_neg = xs_neg * (1 - targets)
-                    pt = pt_pos + pt_neg
-                    gamma = self.gamma_pos * targets + self.gamma_neg * (1 - targets)
-                    focal_weight = (1 - pt) ** gamma
-            else:
-                pt_pos = xs_pos * targets
-                pt_neg = xs_neg * (1 - targets)
-                pt = pt_pos + pt_neg
-                gamma = self.gamma_pos * targets + self.gamma_neg * (1 - targets)
-                focal_weight = (1 - pt) ** gamma
-
-            loss *= focal_weight
-
-        active = self.loss_mask.sum() * logits.shape[0]
-        return -loss.sum() / active    
-
-class ClassSpecificAttnPool(nn.Module):
-    """
-    Each class learns its own spatial attention query.
-    Input:  feats  (B, N, C)
-    Output: pooled (B, num_classes, C)
-    """
-    def __init__(self, C, num_classes):
-        super().__init__()
-        self.norm = nn.LayerNorm(C)
-        # One query per class
-        self.query = nn.Linear(C, num_classes, bias=False)
-        self.temp   = nn.Parameter(torch.ones(1))
-
-    def forward(self, feats):
-        # feats: (B, N, C)
-        feats = self.norm(feats)
-        # Attention logits per class: (B, N, num_classes)
-        attn = self.query(feats) / self.temp.clamp(min=0.1)
-        attn = torch.softmax(attn, dim=1)           # softmax over N
-        # Weighted sum per class: (B, num_classes, C)
-        pooled = torch.einsum("bnc,bnk->bkc", feats, attn)
-        return pooled  # (B, num_classes, C)
-
-
-class SwinWithView(nn.Module):
-    def __init__(self, backbone, num_classes):
-        super().__init__()
-        C = backbone.norm.normalized_shape[0]
-        backbone.head = nn.Identity()
-        self.backbone = backbone
-        self.num_classes = num_classes
-        self.use_attention = True 
-
-        # Class-specific pooling replaces attn_pool
-        self.attn_pool = ClassSpecificAttnPool(C, num_classes)
-
-        # View conditioning (unchanged)
-        self.view_embed = nn.Embedding(2, 32)
-        self.view_mlp   = nn.Sequential(
-            nn.Linear(32, 128),
-            nn.GELU(),
-            nn.Linear(128, C * 2)
-        )
-        nn.init.normal_(self.view_mlp[-1].weight, std=1e-3)
-        nn.init.zeros_(self.view_mlp[-1].bias)    
-        self.view_scale = nn.Parameter(torch.tensor(VIEW_POSITION_SCALE))
-        
-        self.shared = nn.Sequential(
-            nn.Linear(C, C),
-            nn.GELU()
-        )
-        nn.init.xavier_uniform_(self.shared[0].weight)
-        nn.init.zeros_(self.shared[0].bias)
-
-        # Per-class head: each class gets its own (C -> 1) projection
-        # implemented efficiently as a single Linear(C, num_classes)
-        # self.head = nn.Linear(C, num_classes)
-
-        self.head = nn.Sequential(
-            nn.LayerNorm(C),
-            nn.Dropout(FEATURE_DROPOUT),
-            nn.Linear(C, 256),
-            nn.GELU(),
-            nn.Dropout(CLASSIFIER_DROPOUT),
-            nn.Linear(256, 1),   # applied per class independently
-        )
-
-    def forward(self, x, view_id):
-        feats = self.backbone.forward_features(x)   # (B, N, C)
-
-        # View conditioning: modulate the spatial tokens before pooling
-        # so each class-query sees view-conditioned features
-        v = self.view_mlp(self.view_embed(view_id))  # (B, C*2)
-        gamma, beta = v.chunk(2, dim=-1)             # each (B, C)
-        scale = torch.sigmoid(self.view_scale) * 2.0
-        # Broadcast over N
-        feats = feats * (1 + scale * gamma.unsqueeze(1)) + beta.unsqueeze(1)
-
-        if self.use_attention:
-            pooled = self.attn_pool(feats)  # (B, K, C)
-        else:
-            B, N, C = feats.shape
-            pooled = feats.mean(dim=1, keepdim=True)        # (B, 1, C)
-            pooled = pooled.expand(-1, self.num_classes, -1)  # (B, K, C)
-
-        # Apply head to each class's feature vector
-        # Reshape to (B * num_classes, C), run head, reshape back
-        B, K, C = pooled.shape
-        pooled_flat = pooled.reshape(B * K, C)
-
-        pooled_flat = self.shared(pooled_flat)
-
-        logits = self.head(pooled_flat).squeeze(-1)
-        logits = logits.reshape(B, K)
-        
-
-        return logits
-
-# Param Groups
-def init_param_groups(model, base_lr=1e-4, decay=0.8, schedule=None):
-    schedule = schedule or {}
-    groups = []
-    seen = set()
-
-    def add(params, lr, layer_idx, weight_decay=1e-2, unfreeze_override=None):
-        wd, no_wd = [], []
-        for p in params:
-            pid = id(p)
-            if pid in seen: continue
-            seen.add(pid)
-            (wd if p.ndim > 1 else no_wd).append(p)
-
-        ue = unfreeze_override if unfreeze_override is not None else layer_unfreeze_epoch(layer_idx, schedule)
-        for bucket, wdv in [(wd, weight_decay), (no_wd, 0.0)]:
-            if bucket:
-                groups.append({
-                    "params": bucket,
-                    "lr": lr,
-                    "base_lr": lr,
-                    "layer_idx": layer_idx,
-                    "unfreeze_epoch": ue,
-                    "weight_decay": wdv,
-                })
-
-    layers = list(model.backbone.layers)
-    n_layers = len(model.backbone.layers)
-    for i, layer in enumerate(model.backbone.layers):
-        add(layer.parameters(), base_lr * (decay ** (n_layers - 1 - i)), i)
-
-    add(model.backbone.patch_embed.parameters(), base_lr * (decay ** n_layers), 0)
-    add(model.backbone.norm.parameters(),        base_lr * HEAD_LR_MULTIPLIER, -1)
-    add(model.head.parameters(),       base_lr * HEAD_LR_MULTIPLIER, -1)
-    add(model.view_embed.parameters(), base_lr, -1)
-    add(model.view_mlp.parameters(),   base_lr, -1)
-    add(model.attn_pool.parameters(), base_lr * 1.0, -1,
-        unfreeze_override=ATTN_POOL_UNFREEZE_EPOCH)
-    add(model.shared.parameters(), base_lr * HEAD_LR_MULTIPLIER, -1)
-    add([model.view_scale], base_lr, -1)
-
-    leftovers = [p for p in model.parameters() if id(p) not in seen]
-    if leftovers:
-        print(f"WARNING: {len(leftovers)} leftover params — check param groups")
-        add(leftovers, base_lr * (decay ** len(layers)), -2)
-
-    return groups
-
-# Main Model Driver
-if __name__ == "__main__":
-
+    print("Start time: ", datetime.datetime.now())
+    print("Training parameters:")
+    print("  METADATA_CSV_PATH", METADATA_CSV_PATH)
+    print("  IMAGE_ROOT", IMAGE_ROOT)
+    print("  SSL_CKPT", SSL_CKPT)
+    print("  MODEL_OUTPUT_FILE", MODEL_OUTPUT_FILE)
+    print("  SAMPLER_POWER", SAMPLER_POWER)
+    print("  WARMUP_EPOCHS", WARMUP_EPOCHS)
+    print("  WARMUP_START_FACTOR", WARMUP_START_FACTOR)
+    print("  WARMUP_END_FACTOR", WARMUP_END_FACTOR)
+    print("  NUM_EPOCHS", NUM_EPOCHS)
+    print("  IMAGE_SIZE", IMAGE_SIZE)
+    print("  SWIN_WINDOW_SIZE", SWIN_WINDOW_SIZE)
+    print("  BASE_LR", BASE_LR)
+    print("  LR_LAYER_DECAY", LR_LAYER_DECAY)
+    print("  ETA_MIN_RATIO", ETA_MIN_RATIO)
+    print("  PATIENCE", PATIENCE)
+    print("  ASYMMETRIC_CLIP", ASYMMETRIC_CLIP)
+    print("  GAMMA_NEG", GAMMA_NEG)
+    print("  GAMMA_POS", GAMMA_POS)
+    print("  UNFREEZE_WARMUP_EPOCHS", UNFREEZE_WARMUP_EPOCHS)
+    print("  UNFREEZE_WARMUP_FACTOR",UNFREEZE_WARMUP_FACTOR)
+    print("  UNFREEZE_BUMP_FACTOR", UNFREEZE_BUMP_FACTOR)
+    print("  WEIGHT_DECAY", WEIGHT_DECAY)
+    print("  EMA_DECAY", EMA_DECAY)
+    print("  BATCH_SIZE_VAL", BATCH_SIZE_VAL)
+    print("  BATCH_SIZE_TRAIN", BATCH_SIZE_TRAIN)
+    print("  HARDWARE_PITY", HARDWARE_PITY)
+    print("  UNFREEZE_SCHEDULE", UNFREEZE_SCHEDULE )
+    print("  TRAIN_LOADER_WORKERS", LOADER_WORKERS_TRAIN )
+    print("  VALUE_LOADER_WORKERS", LOADER_WORKERS_VALUE)
+    print("  PREFETECH_FACTOR", PREFETECH_FACTOR)
+    print("  PERSISTENT_WORKERS", PERSISTENT_WORKERS)
+    print("  CHECKPOINT_INTERVAL", CHECKPOINT_INTERVAL)
+    print("  MIN_VAL_POSITIVES",   MIN_VAL_POSITIVES)
+
+
+### Main Model Driver ###
+def main():
     # For logging & tuning purposes
     print_train_parameters()
     print_dataset_parameters()
+    print_architecture_parameters()
 
     # GPU prep and init
     device = init_device()
@@ -593,10 +225,6 @@ if __name__ == "__main__":
     df = df[mask].reset_index(drop=True)
     label_matrix = label_matrix[mask.values]
 
-    verify_label_alignment(df, label_matrix, mlb)
-
-
-
     # Split
     # split by Patient so value tests hasn't been trained on the same patients
     # This causes an auc decrease of about 0.01 but is a more accurate test
@@ -604,40 +232,27 @@ if __name__ == "__main__":
     train_idx, value_idx = init_split(df, label_matrix=label_matrix)
 
     # Transforms
-    value_tf   = make_value_tf(256)
-    train_tf = make_train_tf(256)
+    value_tf   = make_value_tf(IMAGE_SIZE)
+    train_tf = make_train_tf(IMAGE_SIZE)
     
     train_ds = CXR8Dataset(df, label_matrix, train_idx, train_tf, path_lookup)
-    value_ds = CXR8Dataset(df, label_matrix, value_idx,   value_tf,   path_lookup)
-        
+    value_ds   = CXR8Dataset(df, label_matrix, value_idx,   value_tf,   path_lookup)
+    
     # After building train_ds, verify alignment:
-    verify_dataset_alignment(train_ds, label_matrix, train_idx)
-
+    img, lbl, view = train_ds[0]
+    expected_label = label_matrix[train_idx[0]]
+    assert np.array_equal(lbl.numpy(), expected_label), "Label mismatch!"
 
     # Sampler
-    # Exclude No Finding from sampler weighting — it's masked in loss
-    active_cols = [i for i in range(len(ALL_CLASSES)) if i != NO_FINDING_COL]
-    train_labels_active = label_matrix[train_idx][:, active_cols]
-
-    class_counts  = train_labels_active.sum(axis=0)
-    class_weights = 1.0 / (class_counts + 1e-6)
-
-    sample_weights = (train_labels_active * class_weights).max(axis=1)
-    sample_weights = sample_weights ** SAMPLER_POWER
-
-    # "No Finding"-only images now have weight 0 here, so the clip
-    # brings them up to the minimum positive weight — they're still seen,
-    # but not over-represented relative to true disease cases
-    sample_weights = np.clip(
-        sample_weights,
-        a_min=sample_weights[sample_weights > 0].min(),
-        a_max=None,
+    class_counts = label_matrix[train_idx].sum(axis=0)
+    class_weights = 1.0 / (class_counts + 1e-6) ** SAMPLER_POWER
+    sample_weights = (label_matrix[train_idx] * class_weights).sum(axis=1)
+    sampler = WeightedRandomSampler(
+        weights=sample_weights,
+        num_samples=len(sample_weights),
+        replacement=True,
     )
-    sample_weights = sample_weights / sample_weights.mean()
-    
-    # sampler = init_sampler(label_matrix=label_matrix, train_idx=train_idx)
-    sampler = None
-    print("Note: Sampler = None")
+
 
     # Loaders
     train_loader = DataLoader(
@@ -648,13 +263,13 @@ if __name__ == "__main__":
         worker_init_fn=worker_init_fn,
         persistent_workers=PERSISTENT_WORKERS,
         pin_memory=True,
-        shuffle=(sampler is None),
         prefetch_factor=PREFETECH_FACTOR,
     )
 
     val_loader = DataLoader(
         value_ds,
         batch_size=BATCH_SIZE_VAL,
+        shuffle=False,
         num_workers=LOADER_WORKERS_VALUE,
         worker_init_fn=worker_init_fn,
         persistent_workers=PERSISTENT_WORKERS,
@@ -662,15 +277,22 @@ if __name__ == "__main__":
         prefetch_factor=PREFETECH_FACTOR,
     )
 
+    # Verify Window is valid for given image size and patch size
+    patch_grid = IMAGE_SIZE // 4
+    assert patch_grid % SWIN_WINDOW_SIZE == 0, (
+        f"patch grid {patch_grid} not divisible by window_size {SWIN_WINDOW_SIZE} — "
+        f"valid sizes: {[SWIN_WINDOW_SIZE * 4 * i for i in range(1, 20) if (SWIN_WINDOW_SIZE * 4 * i) >= 192]}"
+    )
+
     # Model
     base = SwinTransformerV2(
-        img_size=256,
+        img_size=IMAGE_SIZE,
         patch_size=4,
         in_chans=3,
         embed_dim=96,
         depths=[2, 2, 18, 2],
         num_heads=[3, 6, 12, 24],
-        window_size=8,
+        window_size=SWIN_WINDOW_SIZE,
         mlp_ratio=4.0,
         qkv_bias=True,
         drop_rate=0.0,
@@ -684,73 +306,69 @@ if __name__ == "__main__":
 
     model = SwinWithView(backbone=base, num_classes=NUM_CLASSES).to(device)
 
+    if torch.cuda.device_count() > 1:
+        print(f"Using {torch.cuda.device_count()} GPUs")
+        model = torch.nn.DataParallel(model)
+
+    raw_model = model.module if isinstance(model, torch.nn.DataParallel) else model
+    
     with torch.no_grad():
-        x = torch.randn(1, 3, 256, 256).to(device)
-        feats = model.backbone.forward_features(x)
-        print("Backbone output shape:", feats.shape)
+        x = torch.randn(1, 3, IMAGE_SIZE, IMAGE_SIZE).to(device)
+        v = torch.zeros(1, dtype=torch.long).to(device)
+        out = raw_model(x, v)
+        print("Model output shape:", out.shape)  # expect (1, NUM_CLASSES)
 
 
     layer_to_idx = {
         layer: i
-        for i, layer in enumerate(model.backbone.layers)
+        for i, layer in enumerate(raw_model.backbone.layers)
     }
 
     # Model Training Checkpoint
-    init_ckpt(model=model, path=SSL_CKPT)
+    init_ckpt(model=raw_model, path=SSL_CKPT)
 
-    ema_model = AveragedModel(model, multi_avg_fn=get_ema_multi_avg_fn(decay=EMA_DECAY))
+    ema_model = AveragedModel(raw_model, multi_avg_fn=get_ema_multi_avg_fn(decay=EMA_DECAY))
                 
-    param_group = init_param_groups(model, base_lr=BASE_LR,
-                                    decay=LR_LAYER_DECAY, schedule=UNFREEZE_SCHEDULE)
-    optimizer = torch.optim.AdamW(param_group, weight_decay=WEIGHT_DECAY)
+    param_group = init_param_groups(raw_model, base_lr=BASE_LR, decay=LR_LAYER_DECAY,
+                                    schedule=UNFREEZE_SCHEDULE)
 
 
-    lambdas = [
-        make_lr_lambda(
-            g["unfreeze_epoch"],
-            g["base_lr"],
-            bump=(g.get("layer_idx", -1) >= 0 and g["unfreeze_epoch"] > 1)
-        )
-        for g in optimizer.param_groups
-    ]
-    
-    scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=lambdas)
 
-    # Freeze backbone layers whose unfreeze_epoch > 1
-    for layer, idx in layer_to_idx.items():
-        if layer_unfreeze_epoch(idx, UNFREEZE_SCHEDULE) > 1:
-            for p in layer.parameters():
-                p.requires_grad = False
+    optimizer = torch.optim.AdamW(param_group, weight_decay=WEIGHT_DECAY)    
+
    
-
-    # Better logging
-    log_path = "training_log.csv"
-    with open(log_path, "w", newline="") as f:
-        writer = csv.writer(f)
-        writer.writerow(["epoch", "tr_loss", "tr_auc", "val_loss", "val_auc"] + ALL_CLASSES)
-
-    
-
     # scaler = GradScaler(device="cuda")
     criterion = AsymmetricLoss(
         gamma_pos=GAMMA_POS,
         gamma_neg=GAMMA_NEG,
         clip=ASYMMETRIC_CLIP,
-        # label_smooth=LABEL_SMOOTH,
-    ).to(device)
+        label_smooth=0.05,
+    )
 
-    ###
-    ### Training cycle ###
-    ###
+    warmup_scheduler = torch.optim.lr_scheduler.LinearLR(
+        optimizer,
+        start_factor=WARMUP_START_FACTOR,
+        end_factor=WARMUP_END_FACTOR,
+        total_iters=WARMUP_EPOCHS
+    )
+   
+    # Unfreeze SwinV2 stages to warmup backbone
+    unfreeze_scheduler = UnfreezeScheduler(
+        layer_to_idx=layer_to_idx,
+        optimizer=optimizer,
+        schedule=UNFREEZE_SCHEDULE,
+        warmup_epochs=UNFREEZE_WARMUP_EPOCHS
+    )
 
+
+    # Training Loop
     def run_epoch(loader, train=True, eval_model=None):
-        active_model = eval_model if (not train and eval_model) else model
+        active_model = eval_model if (not train and eval_model is not None) else model
         active_model.train() if train else active_model.eval()
-
+        # model.train() if train else model.eval()
         total_loss = 0.0
         n_samples = 0
         all_logits, all_labels = [], []
-
 
         with torch.set_grad_enabled(train):
             for imgs, lbls, views in tqdm(loader, desc="train" if train else "val ", leave=False, mininterval=10.0):
@@ -759,24 +377,26 @@ if __name__ == "__main__":
                 views = views.to(device, non_blocking=True)
                 n_samples += imgs.size(0)
 
-                if train:
-                    optimizer.zero_grad()
-                
                 with autocast(device_type="cuda", dtype=torch.bfloat16, enabled=True):
-                # with autocast(device_type="cuda", dtype=torch.float16, enabled=True):
-                    logits = active_model(imgs, views)
+                    if train:
+                        logits = active_model(imgs, views)
+                        probs = torch.sigmoid(logits)
+                    else:
+                        probs = tta_predict(active_model, imgs, views)
+                        logits = torch.logit(probs.clamp(1e-6, 1 - 1e-6))
+
                     loss = criterion(logits, lbls)
 
                 if train:
                     loss.backward()
                     torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
                     optimizer.step()
-                    ema_model.update_parameters(model)
+                    optimizer.zero_grad()
+                    ema_model.update_parameters(raw_model)
 
                 total_loss += loss.item() * imgs.size(0)
-                all_logits.append(logits.sigmoid().float().cpu().detach())
+                all_logits.append(probs.float().cpu().detach())
                 all_labels.append(lbls.detach().cpu())
-
 
 
         avg_loss = total_loss / n_samples
@@ -786,75 +406,95 @@ if __name__ == "__main__":
         per_class_auc = {}
         aucs = []
         for c in range(labels.shape[1]):
-            if c == NO_FINDING_COL:
-                continue
             col = labels[:, c]
             n_pos = col.sum()
             if n_pos >= MIN_VAL_POSITIVES and n_pos < len(col):
                 auc = roc_auc_score(col, probs[:, c])
                 per_class_auc[ALL_CLASSES[c]] = round(auc, 3)
-                aucs.append(auc)
+                if c != NO_FINDING_COL:
+                    aucs.append(auc)
             elif n_pos > 0:
                 # Still log it, just don't include in mean
                 per_class_auc[ALL_CLASSES[c]] = round(roc_auc_score(col, probs[:, c]), 3)
+        
+        temps = raw_model.stage_temps.abs().detach().cpu().numpy()
+        print(f"  stage_temps (abs): {np.round(temps, 3)}")
+        
+        return avg_loss, np.mean(aucs), per_class_auc, probs, labels
 
-        return avg_loss, np.mean(aucs) if aucs else 0.0, per_class_auc
+    # Epoch Loop
+    # Initialize CSV log
+    with open(LOG_OUTPUT_FILE, "w", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow(["epoch", "tr_loss", "tr_auc", "val_loss", "val_auc"] + ALL_CLASSES)
 
-
-
-   
     best_val = 0.0
     no_improve = 0
-    
-    ### Training loop ###
+    group_warmup_remaining = {}
+    best_thresh = np.zeros(NUM_CLASSES)
+
     for epoch in range(1, NUM_EPOCHS + 1):
-        # Unfreeze layers at scheduled epoch
-        for layer, idx in layer_to_idx.items():
-            if epoch == layer_unfreeze_epoch(idx, UNFREEZE_SCHEDULE):
-                for p in layer.parameters():
-                    p.requires_grad = True
 
-
-        # Disable attention early
-        if epoch <= ATTN_WARMUP_EPOCHS:
-            model.use_attention = False
-        else:
-            model.use_attention = True
-
-        ### Train epoch ###
-        tr_loss, tr_auc, _ = run_epoch(train_loader, train=True)
-                
-        scheduler.step()
+        tr_loss, tr_auc, _, _, _ = run_epoch(train_loader, train=True)
         torch.cuda.empty_cache()
         time.sleep(HARDWARE_PITY)
-        
-        ### Value epoch ###
-        val_loss, val_auc, per_class = run_epoch(val_loader, train=False, eval_model=ema_model)
 
+        # Evaluate with EMA model
+        val_loss, val_auc, per_class, val_probs, val_labels = run_epoch(
+            val_loader,
+            train=False,
+            eval_model=ema_model.module
+        )
 
         print("  Per-class AUCs:")
         for cls, auc in sorted(per_class.items(), key=lambda x: x[1]):
             print(f"    {cls:<20s} {auc:.3f}")
 
-        with open(log_path, "a", newline="") as f:
+        # Write CSV row
+        with open(LOG_OUTPUT_FILE, "a", newline="") as f:
             writer = csv.writer(f)
             writer.writerow([epoch, tr_loss, tr_auc, val_loss, val_auc] +
                             [per_class.get(c, "") for c in ALL_CLASSES])
 
-        if epoch % 5 == 0:
+        # Periodic full checkpoint
+        if epoch % CHECKPOINT_INTERVAL == 0:
             torch.save({
                 "epoch": epoch,
                 "model": model.state_dict(),
+                "ema_model": ema_model.module.state_dict(),
                 "optimizer": optimizer.state_dict(),
-                "scheduler": scheduler.state_dict(),
                 "best_val": best_val,
                 "no_improve": no_improve,
             }, f"checkpoint_epoch{epoch:02d}.pth")
+
         if val_auc > best_val:
             best_val = val_auc
             no_improve = 0
-            torch.save(ema_model.module.state_dict(), MODEL_OUTPUT_FILE)
-            print("  ->  saved")
+
+            # recompute thresholds
+            new_thresh = np.zeros(NUM_CLASSES)
+
+            for c in range(NUM_CLASSES):
+                if val_labels[:, c].sum() < MIN_VAL_POSITIVES:
+                    new_thresh[c] = 0.5
+                    continue
+
+                fpr, tpr, roc_thresholds = roc_curve(val_labels[:, c], val_probs[:, c])
+                j_scores = tpr - fpr
+                best_idx = np.argmax(j_scores)
+                new_thresh[c] = float(np.clip(roc_thresholds[best_idx], 0.01, 0.99))
+
+
+            best_thresh = new_thresh.copy()
+            print("Updated thresholds:", np.round(best_thresh, 3))
+
+            # save checkpoint with thresholds
+            torch.save({
+                "model": ema_model.module.state_dict(),
+                "thresholds": best_thresh
+            }, MODEL_OUTPUT_FILE)
+
+            print("  -> saved new best model + thresholds")
         else:
             no_improve += 1
             print(f"  (no improvement {no_improve}/{PATIENCE})")
@@ -863,49 +503,50 @@ if __name__ == "__main__":
             f"train_loss={tr_loss:.4f}  train_auc={tr_auc:.4f}  "
             f"val_loss={val_loss:.4f}  val_auc={val_auc:.4f}")
 
-        head_lr = next(g["lr"] for g in optimizer.param_groups
-                    if g.get("layer_idx") == -1 and g["unfreeze_epoch"] == 1)
-        layer3_lr = next(g["lr"] for g in optimizer.param_groups if g.get("layer_idx") == 3)
-        print(f"  head_lr={head_lr:.2e}  layer3_lr={layer3_lr:.2e}")
 
-        # for g in optimizer.param_groups:
-        #     print(g["layer_idx"], g["lr"])
 
-        if no_improve >= PATIENCE and epoch > max(UNFREEZE_SCHEDULE.keys()) + ATTN_WARMUP_EPOCHS:
+        unfreeze_scheduler.step(group_warmup_remaining)
+        if epoch <= WARMUP_EPOCHS:
+            warmup_scheduler.step()
+        else:
+            for group in optimizer.param_groups:
+                group["lr"] = init_group_cosine(
+                    group, epoch, NUM_EPOCHS, ETA_MIN_RATIO, WARMUP_EPOCHS
+                )
+
+
+        for group in optimizer.param_groups:
+            lidx = group.get("layer_idx", -1)
+            if lidx in group_warmup_remaining:
+                epochs_done = UNFREEZE_WARMUP_EPOCHS - group_warmup_remaining[lidx] + 1
+                scale = UNFREEZE_WARMUP_FACTOR + (UNFREEZE_BUMP_FACTOR - UNFREEZE_WARMUP_FACTOR) * (epochs_done / UNFREEZE_WARMUP_EPOCHS)
+                group["lr"] *= scale
+
+
+        for k in list(group_warmup_remaining):
+            group_warmup_remaining[k] -= 1
+            if group_warmup_remaining[k] <= 0:
+                del group_warmup_remaining[k]
+
+        head_lr = next(g["lr"] for g in optimizer.param_groups if g.get("layer_idx") == -1)
+        layer0_lr = next(g["lr"] for g in optimizer.param_groups if g.get("layer_idx") == 0)
+        print(f"  head_lr={head_lr:.2e}  layer0_lr={layer0_lr:.2e}")
+
+        # Guard: don't stop before all unfreeze events have had time to stabilize
+        if no_improve >= PATIENCE and epoch > max(UNFREEZE_SCHEDULE.keys()) + WARMUP_EPOCHS:
             print(f"Early stopping triggered at epoch {epoch}")
             break
 
-
-    ### End Training Loop ###
     print("Done. Best val AUC:", round(best_val, 4))
     
     # Inspect learned view conditioning
-    model.load_state_dict(torch.load(MODEL_OUTPUT_FILE, map_location=device))
-    print("view_scale:", torch.sigmoid(model.view_scale).item() * 2.0)
-    
-    # Print the attn_temp to see if attention pooling sharpened
-    print("attn_temp:", model.attn_pool.temp.item())
+    m = model.module if isinstance(model, torch.nn.DataParallel) else model
+    ckpt = torch.load(MODEL_OUTPUT_FILE, map_location=device)
+    m.load_state_dict(ckpt["model"])
+    thresholds = ckpt["thresholds"]
 
-    model.eval()
-
-    gradcam = GradCAM(model, device)
-
-    # Grab one validation image
-    for vis_i in range(len(value_ds)):
-        img_tensor, lbl, view = value_ds[vis_i]
-        if lbl.sum() > 0 and lbl[NO_FINDING_COL] == 0:
-            img_np = cv2.imread(path_lookup[df.iloc[value_idx[vis_i]]["Image Index"]], cv2.IMREAD_GRAYSCALE)
-            break
-    else:
-        print("Warning: no suitable validation image found for visualization")
-        gradcam.remove()
-        sys.exit()
+    print("view_scale:", torch.sigmoid(m.view_scale).item() * 2.0)
 
 
-    for class_idx in range(NUM_CLASSES):
-        if lbl[class_idx] == 1:   # only visualize positive classes for this image
-            visualize_class(model, img_tensor, img_np, class_idx,
-                            device, gradcam, view_id=int(view),
-                            save_path=f"viz_{ALL_CLASSES[class_idx]}.png")
-
-    gradcam.remove()
+if __name__ == "__main__":
+    main()

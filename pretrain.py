@@ -35,7 +35,7 @@ from torch.utils.data import DataLoader, Dataset, DistributedSampler
 from torchvision import transforms
 from tqdm import tqdm
 
-from dataset import CLIP_LIMIT, TILE_GRID_SIZE, CLAHETransform, PerImageStandardize
+from dataset import CLAHE_CLIP_LIMIT, CLAHE_TILE_GRID_SIZE, CLAHETransform, PerImageStandardize
 from swin_transformer_v2 import SwinTransformerV2
 
 
@@ -94,10 +94,10 @@ class CXRPretrainDataset(Dataset):
 
         self.tf = transforms.Compose([
             transforms.Resize((img_size, img_size)),
-            CLAHETransform(clip_limit=CLIP_LIMIT, tile_grid_size=TILE_GRID_SIZE),
+            transforms.ToTensor(),
+            CLAHETransform(clip_limit=CLAHE_CLIP_LIMIT, tile_grid_size=(CLAHE_TILE_GRID_SIZE, CLAHE_TILE_GRID_SIZE)),
             transforms.RandomHorizontalFlip(p=0.5),
             transforms.RandomApply([transforms.RandomRotation(degrees=10)], p=0.5),
-            transforms.ToTensor(),
             PerImageStandardize(),
         ])
 

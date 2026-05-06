@@ -84,13 +84,13 @@ class CLAHETransform:
         return self._clahe
 
     def __getstate__(self):
-        # Called when pickling — drop the unpicklable cv2 object
+        # Called when pickling - drop the unpicklable cv2 object
         state = self.__dict__.copy()
         state['_clahe'] = None
         return state
 
     def __setstate__(self, state):
-        # Called when unpickling in each worker — restore without cv2 object
+        # Called when unpickling in each worker - restore without cv2 object
         self.__dict__.update(state)
 
     def __call__(self, img):
@@ -140,7 +140,13 @@ def make_train_tf(size):
         ),
         A.GridDistortion(num_steps=5, distort_limit=0.05, p=0.3),
         A.ColorJitter(brightness=JITTER_BRIGHTNESS, contrast=JITTER_CONTRAST, p=JITTER_PROB),
-        A.CoarseDropout(num_holes_upper=8, hole_height_upper=16, hole_width_upper=16, p=0.2),
+        
+        A.CoarseDropout(
+            num_holes_range=(1, 8),
+            hole_height_range=(4, 16),
+            hole_width_range=(4, 16),
+            p=0.2
+        ),
         ToTensorV2(),
     ])
 
@@ -162,7 +168,7 @@ class CXR8Dataset(Dataset):
         img = np.array(img)
         img = self.transform(image=img)["image"]
         img = img.float() / 255.0
-        PerImageStandardize()(img)
+        img =PerImageStandardize()(img)
         lbl = torch.tensor(self.labels[i], dtype=torch.float32)
         view_id = torch.tensor(self.df.loc[i, "view_id"], dtype=torch.long)
         return img, lbl, view_id
@@ -170,19 +176,20 @@ class CXR8Dataset(Dataset):
 
 ### Helper functions ###
 def print_dataset_parameters():
-    print("CLAHE_CLIP_LIMIT", CLAHE_CLIP_LIMIT)
-    print("CLAHE_TILE_GRID_SIZE", CLAHE_TILE_GRID_SIZE)
-    print("CLAHE_PROB", CLAHE_PROB)
-    print("HORIZONTAL_FLIP_PROB", HORIZONTAL_FLIP_PROB)
-    print("ROTATION_DEGREES", ROTATION_DEGREES)
-    print("ROTATION_PROB", ROTATION_PROB)
-    print("JITTER_PROB", JITTER_PROB)
-    print("JITTER_BRIGHTNESS", JITTER_BRIGHTNESS)
-    print("JITTER_CONTRAST", JITTER_CONTRAST)
-    print("IMAGENET_MEAN", IMAGENET_MEAN)
-    print("IMAGENET_STD", IMAGENET_STD)
-    print("NIH_CXR8_CUSTOM_MEAN", NIH_CXR8_CUSTOM_MEAN)
-    print("NIH_CXR8_CUSTOM_STD", NIH_CXR8_CUSTOM_STD)
+    print("Dataset Parameters:")
+    print("  CLAHE_CLIP_LIMIT", CLAHE_CLIP_LIMIT)
+    print("  CLAHE_TILE_GRID_SIZE", CLAHE_TILE_GRID_SIZE)
+    print("  CLAHE_PROB", CLAHE_PROB)
+    print("  HORIZONTAL_FLIP_PROB", HORIZONTAL_FLIP_PROB)
+    print("  ROTATION_DEGREES", ROTATION_DEGREES)
+    print("  ROTATION_PROB", ROTATION_PROB)
+    print("  JITTER_PROB", JITTER_PROB)
+    print("  JITTER_BRIGHTNESS", JITTER_BRIGHTNESS)
+    print("  JITTER_CONTRAST", JITTER_CONTRAST)
+    print("  IMAGENET_MEAN", IMAGENET_MEAN)
+    print("  IMAGENET_STD", IMAGENET_STD)
+    print("  NIH_CXR8_CUSTOM_MEAN", NIH_CXR8_CUSTOM_MEAN)
+    print("  NIH_CXR8_CUSTOM_STD", NIH_CXR8_CUSTOM_STD)
 
 # Worker Init; keep for memory safety
 def worker_init_fn(worker_id):
