@@ -1,3 +1,11 @@
+"""
+Usage:
+python script.py <image_path> [--ckpt path/to/model.pth] [--view 0|1]
+                        [--classes c1 c2 ...] [--save-prefix name]
+
+If --classes is omitted, the script auto-selects top-3 predicted classes.
+Outputs side-by-side (original | GradCAM | attention) images per class.
+"""
 import cv2
 import matplotlib.pyplot as plt
 
@@ -8,10 +16,11 @@ import argparse
 import cv2
 from PIL import Image
 
-from architecture import SwinWithView, init_device
-from swin_transformer_v2 import SwinTransformerV2
-from train_save import IMAGE_SIZE, MODEL_OUTPUT_FILE
+from architecture import IMAGE_SIZE
+from util import init_device
+from classifier import load_model
 from dataset import ALL_CLASSES, make_value_tf, PerImageStandardize
+from train import MODEL_OUTPUT_FILE
 
 SAVE_PATH = "visualization.png"
 
@@ -46,12 +55,18 @@ def get_class_attention(model, img_tensor, class_idx, device, view_id=0):
         # Track token counts per stage so we can slice later
         token_counts = [f.shape[1] for f in early_feats]
 
+
         stage_tokens = []
-        for feat, proj in zip(early_feats, model.stage_projs):
+        for i, (feat, proj) in enumerate(zip(early_feats, model.stage_projs)):
             B, N, D = feat.shape
             h = w = int(N ** 0.5)
             feat_2d = feat.reshape(B, h, w, D).permute(0, 3, 1, 2)
-            stage_tokens.append(proj(feat_2d).flatten(2).transpose(1, 2))
+            projected = proj(feat_2d).flatten(2).transpose(1, 2)
+            projected = model.class_norm(projected)
+            gate = torch.sigmoid(model.stage_gates[i])
+            projected = projected * gate
+            stage_tokens.append(projected)
+
 
         x_normed = model.backbone.norm(x)
         x_normed = model.class_norm(x_normed)
@@ -188,34 +203,37 @@ def visualize_class(model, img_tensor, img_np, class_idx, device,
     plt.show()
 
 
-def load_model(ckpt_path, device):
-    base = SwinTransformerV2(
-        img_size=IMAGE_SIZE,
-        patch_size=4,
-        in_chans=3,
-        embed_dim=96,
-        depths=[2, 2, 18, 2],
-        num_heads=[3, 6, 12, 24],
-        window_size=12,
-        mlp_ratio=4.0,
-        qkv_bias=True,
-        drop_rate=0.0,
-        attn_drop_rate=0.0,
-        drop_path_rate=0.2,
-        ape=False,
-        patch_norm=True,
-        use_checkpoint=False,
-    )
-    model = SwinWithView(backbone=base, num_classes=len(ALL_CLASSES)).to(device)
+# def load_model(ckpt_path, device):
+#     base = SwinTransformerV2(
+#         img_size=IMAGE_SIZE,
+#         patch_size=4,
+#         in_chans=3,
+#         embed_dim=96,
+#         depths=[2, 2, 18, 2],
+#         num_heads=[3, 6, 12, 24],
+#         window_size=12,
+#         mlp_ratio=4.0,
+#         qkv_bias=True,
+#         drop_rate=0.0,
+#         attn_drop_rate=0.0,
+#         drop_path_rate=0.2,
+#         ape=False,
+#         patch_norm=True,
+#         use_checkpoint=False,
+#     )
+#     model = SwinWithView(backbone=base, num_classes=len(ALL_CLASSES)).to(device)
 
-    print(f"Loading checkpoint: '{ckpt_path}'")
+#     print(f"Loading checkpoint: '{ckpt_path}'")
 
-    ckpt = torch.load(ckpt_path, map_location=device, weights_only=False)
-    model.load_state_dict(ckpt["model"])
-    thresholds = ckpt.get("thresholds", np.full(len(ALL_CLASSES), 0.5))
+#     ckpt = torch.load(ckpt_path, map_location=device, weights_only=False)
+#     temperature = ckpt.get("temperature", 1.0)
 
-    print(f"Thresholds: {np.round(thresholds, 3)}")
-    return model, thresholds
+#     model.load_state_dict(ckpt["model"])
+#     thresholds = ckpt.get("thresholds", np.full(len(ALL_CLASSES), 0.5))
+#     temperature = ckpt.get("temperature", 1.0)   # add this
+#     print(f"Temperature: {temperature:.4f}")
+#     print(f"Thresholds: {np.round(thresholds, 3)}")
+#     return model, thresholds, temperature
 
 
 def load_image(img_path):
@@ -264,6 +282,7 @@ def run_visualization(model, device, img_tensor, img_np, class_indices, view_id,
 
 
 def main():
+    print_visualization_parameters()
     parser = argparse.ArgumentParser(description="GradCAM + attention visualization for chest X-ray")
     parser.add_argument("image",
         help="Path to input PNG/JPG")
@@ -312,4 +331,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

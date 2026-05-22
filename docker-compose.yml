@@ -1,0 +1,167 @@
+# docker-compose.yml
+
+# classifier runs the ML model, simple http server
+# keep cut off from open web ports
+
+# web runs the exposed API
+
+# frontend runs the Angular nginx server
+# prometheus collects useful metrics
+# grafana displays them
+
+# frontend and web are to be served with public access
+# the rest (in particular Classifier) should remain accessable
+# to 127.0.0.1 only for security purposes
+
+services:
+
+  classifier:
+    build:
+      context: .
+      dockerfile: Dockerfile.classifier
+    image: local-classifier:latest
+    environment:
+      PYTHONUNBUFFERED: "1"
+      NO_ALBUMENTATIONS_UPDATE: "1"
+      API_KEY: "${CLASSIFIER_API_KEY}"
+    expose:
+      - "9000"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: ["gpu"]
+
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    read_only: true
+    tmpfs:
+      - /tmp
+      - /home/appuser/.cache
+    networks:
+      - backend
+    
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "PYTHONDONTWRITEBYTECODE=1 python3 -c \"import os, urllib.request; req = urllib.request.Request('http://localhost:9000/ready', headers={'X-API-Key': os.environ.get('API_KEY', '')}); urllib.request.urlopen(req, timeout=5)\""
+        ]
+      interval: 20s
+      timeout: 10s
+      retries: 5
+      start_period: 40s # failures dont count to retries until this ends
+
+    
+
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile.web
+    image: local-web:latest
+    environment:
+      CLASSIFIER_URL: "http://classifier:9000/image"
+      CLASSIFIER_API_KEY: "${CLASSIFIER_API_KEY}"
+      MAX_BYTES: "10485760"
+    expose:
+      - "8000"
+    depends_on:
+      classifier:
+        condition: service_healthy
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    read_only: true
+    tmpfs:
+      - /tmp
+      - /home/appuser/.cache
+    networks:
+      - backend    # reaches classifier
+      - dmz        # reachable by frontend
+
+
+  frontend:
+    build:
+      context: ./frontend   # directory containing the Angular project
+      dockerfile: ../Dockerfile.frontend
+    image: local-frontend:latest
+    expose:
+      - "4000"
+    depends_on:
+      - web
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    read_only: true
+    tmpfs:
+      - /tmp:uid=101,gid=101   # nginx user in alpine is uid/gid 101
+    networks:
+      - dmz        # proxies to web, no direct backend access
+
+  caddy:
+    image: caddy:2
+
+    restart: unless-stopped
+
+    ports:
+      - "80:80"
+      - "443:443"
+
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile
+      - caddy_data:/data
+      - caddy_config:/config
+
+    depends_on:
+      - frontend
+
+    networks:
+      - dmz
+
+
+  prometheus:
+    image: prom/prometheus:latest
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    ports:
+      - "127.0.0.1:9090:9090"
+    networks:
+      - dmz
+
+  grafana:
+    image: grafana/grafana:latest
+    ports:
+      - "127.0.0.1:3000:3000"
+    volumes:
+      - grafana_data:/var/lib/grafana
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: "admin_pw"
+    depends_on:
+      - prometheus
+    networks:
+      - dmz
+
+
+networks:
+  # Exposed network: browser -> frontend, frontend -> web
+  dmz:
+    driver: bridge
+
+  # Internal network: web -> classifier only
+  backend:
+    driver: bridge
+    internal: true
+
+
+volumes:
+  prometheus_data:
+  grafana_data:
+  caddy_data:
+  caddy_config:

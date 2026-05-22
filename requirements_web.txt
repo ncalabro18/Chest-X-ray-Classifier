@@ -1,0 +1,10 @@
+fastapi
+prometheus-fastapi-instrumentator
+uvicorn[standard]
+httpx
+python-multipart
+pillow
+numpy
+torch
+prometheus_client
+prometheus_fastapi_instrumentator

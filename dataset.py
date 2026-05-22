@@ -18,12 +18,14 @@ from sklearn.model_selection import StratifiedShuffleSplit
 import torch
 from torch.utils.data import Dataset
 import cv2
-from PIL import Image, ExifTags
+from PIL import Image
 import albumentations as A
 from albumentations.pytorch import ToTensorV2
 
+from classes import ALL_CLASSES
 
-### Preprocessing Constants
+
+### Augmentation / Preprocessing Constants ###
 
 HORIZONTAL_FLIP_PROB = 0.5
 
@@ -41,24 +43,20 @@ CLAHE_PROB = 1.0 # making consistant for now to increase stability
 
 # ElasticTransform
 ELASTIC_ALPHA = 1.0
-ELASTIC_SIGMA = 10.0
+ELASTIC_SIGMA = 6.0
 ELASTIC_INTERPOLATION = cv2.INTER_LINEAR
 ELASTIC_FILL  = 0
 ELASTIC_PROB  = 0.3
 
 ### Calculated Constants
-IMAGENET_MEAN = [0.485, 0.456, 0.406]
-IMAGENET_STD  = [0.229, 0.224, 0.225]
+# not used but keeping for possible future testing
+# IMAGENET_MEAN = [0.485, 0.456, 0.406]
+# IMAGENET_STD  = [0.229, 0.224, 0.225]
 
 NIH_CXR8_CUSTOM_MEAN = [0.5249, 0.5249, 0.5249]
 NIH_CXR8_CUSTOM_STD  = [0.2622, 0.2622, 0.2622]
 
-ALL_CLASSES = [
-    "Atelectasis","Cardiomegaly","Consolidation","Edema",
-    "Effusion","Emphysema","Fibrosis","Hernia",
-    "Infiltration","Mass","No Finding","Nodule",
-    "Pleural_Thickening","Pneumonia","Pneumothorax",
-]
+
 
 
 # Removes global brightness variation
@@ -117,17 +115,26 @@ def make_train_tf(size):
             hole_width_range=(4, 16),
             p=0.2
         ),
+        A.GaussNoise(std_range=(0.01, 0.02), p=0.3),
+        A.RandomGamma(gamma_limit=(80, 120), p=0.4),
         ToTensorV2(),
     ])
 
 
 ### Dataset ###
 class CXR8Dataset(Dataset):
-    def __init__(self, df, labels, idx_array, transform, lookup):
+    def __init__(self, df, labels, idx_array, transform, lookup,
+                 verify_label_alignment=False):
         self.df        = df.iloc[idx_array].reset_index(drop=True)
         self.labels    = labels[idx_array]
         self.transform = transform
         self.lookup    = lookup
+
+         # After building train_ds, verify alignment:
+        img, lbl, view = self[0]
+        expected_label = labels[idx_array[0]]
+        assert np.array_equal(lbl.numpy(), expected_label), "Label mismatch!"
+
 
     def __len__(self):
         return len(self.df)
@@ -138,7 +145,7 @@ class CXR8Dataset(Dataset):
         img = np.array(img)
         img = self.transform(image=img)["image"]
         img = img.float() / 255.0
-        img =PerImageStandardize()(img)
+        img = PerImageStandardize()(img)
         lbl = torch.tensor(self.labels[i], dtype=torch.float32)
         view_id = torch.tensor(self.df.loc[i, "view_id"], dtype=torch.long)
         return img, lbl, view_id
@@ -154,28 +161,38 @@ def init_split(df, label_matrix):
         p = patient_id_to_idx[row["Patient ID"]]
         patient_label_matrix[p] |= label_matrix[img_idx]
 
-    # Collapse multilabel to a single stratification key via label combination hash
-    # Rare combos get lumped into a single "other" bin to avoid singleton strata
     combo_strings = ["_".join(map(str, row)) for row in patient_label_matrix]
     from collections import Counter
     counts = Counter(combo_strings)
     MIN_COMBO_COUNT = 2
     strat_labels = [c if counts[c] >= MIN_COMBO_COUNT else "__other__" for c in combo_strings]
 
-    sss = StratifiedShuffleSplit(n_splits=1, test_size=0.15, random_state=42)
-    train_patient_idx, val_patient_idx = next(sss.split(patient_ids, strat_labels))
+    # Three-way split: thresh 7%, then val 15% of remainder
+    sss_thresh = StratifiedShuffleSplit(n_splits=1, test_size=0.07, random_state=99)
+    remaining_idx, thresh_patient_idx = next(sss_thresh.split(patient_ids, strat_labels))
 
-    train_patients = set(patient_ids[train_patient_idx])
-    value_patients = set(patient_ids[val_patient_idx])
+    remaining_patients = patient_ids[remaining_idx]
+    remaining_strat    = [strat_labels[i] for i in remaining_idx]
 
-    train_idx = df[df["Patient ID"].isin(train_patients)].index.to_numpy()
-    value_idx = df[df["Patient ID"].isin(value_patients)].index.to_numpy()
+    sss_val = StratifiedShuffleSplit(n_splits=1, test_size=0.15, random_state=42)
+    train_patient_idx, val_patient_idx = next(
+        sss_val.split(remaining_patients, remaining_strat)
+    )
 
-    for split_name, idx in [("train", train_idx), ("val", value_idx)]:
+    train_patients  = set(remaining_patients[train_patient_idx])
+    value_patients  = set(remaining_patients[val_patient_idx])
+    thresh_patients = set(patient_ids[thresh_patient_idx])
+
+    train_idx  = df[df["Patient ID"].isin(train_patients)].index.to_numpy()
+    value_idx  = df[df["Patient ID"].isin(value_patients)].index.to_numpy()
+    thresh_idx = df[df["Patient ID"].isin(thresh_patients)].index.to_numpy()
+
+    for split_name, idx in [("train", train_idx), ("val", value_idx), ("thresh", thresh_idx)]:
         n_hernia = label_matrix[idx, ALL_CLASSES.index("Hernia")].sum()
         print(f"{split_name} Hernia positives: {n_hernia}")
 
-    return train_idx, value_idx
+    return train_idx, value_idx, thresh_idx
+
 
 
 def print_dataset_parameters():
@@ -189,12 +206,7 @@ def print_dataset_parameters():
     print("  JITTER_PROB", JITTER_PROB)
     print("  JITTER_BRIGHTNESS", JITTER_BRIGHTNESS)
     print("  JITTER_CONTRAST", JITTER_CONTRAST)
-    print("  IMAGENET_MEAN", IMAGENET_MEAN)
-    print("  IMAGENET_STD", IMAGENET_STD)
     print("  NIH_CXR8_CUSTOM_MEAN", NIH_CXR8_CUSTOM_MEAN)
     print("  NIH_CXR8_CUSTOM_STD", NIH_CXR8_CUSTOM_STD)
 
-# Worker Init; keep for memory safety
-def worker_init_fn(worker_id):
-    cv2.setNumThreads(0)
 

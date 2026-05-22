@@ -1,0 +1,11 @@
+{
+  "/submit": {
+    "target": "http://localhost:8000",
+    "secure": false
+  },
+
+  "/status": {
+    "target": "http://localhost:8000",
+    "secure": false
+  }
+}

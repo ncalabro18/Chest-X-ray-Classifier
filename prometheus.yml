@@ -1,0 +1,10 @@
+scrape_configs:
+  - job_name: web
+    static_configs:
+      - targets: ['web:8000']
+    metrics_path: /metrics
+
+  - job_name: classifier
+    static_configs:
+      - targets: ['classifier:9000']
+    metrics_path: /metrics

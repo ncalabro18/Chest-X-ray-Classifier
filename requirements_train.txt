@@ -1,0 +1,24 @@
+# Deep learning
+torch
+torchvision
+
+# Image processing
+opencv-python-headless
+pillow
+albumentations
+
+# Data / ML
+numpy
+pandas
+scikit-learn
+
+# API / serving
+# Should not be needed for train.py
+# fastapi
+# uvicorn[standard]
+# httpx
+# python-multipart
+
+# Observability
+prometheus-fastapi-instrumentator
+prometheus-client

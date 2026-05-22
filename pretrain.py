@@ -45,7 +45,7 @@ OUTPUT_CKPT = "../chest_xray_dataset/simmim_swinv2_cxr_backbone.pth"
 RESUME_CKPT = None   # set to a full checkpoint path to resume training
 
 # Architecture (must match train.py)
-IMG_SIZE    = 384
+IMG_SIZE    = 256
 PATCH_SIZE  = 4
 IN_CHANS    = 3
 EMBED_DIM   = 96
@@ -58,15 +58,15 @@ MASK_RATIO   = 0.60
 DECODER_DIM  = 256   # internal channel width of FPN decoder
 
 # Per GPU.  8 GPUs × 32 = effective batch 256.
-BATCH_SIZE   = 32
-ACCUM_STEPS  = 8     # increase to further multiply effective batch
+BATCH_SIZE   = 64
+ACCUM_STEPS  = 4     # increase to further multiply effective batch
 
 # Square-root scaling from reference (1e-4 @ bs=32 → 2e-4 @ bs=256)
 BASE_LR        = 2e-4
 WEIGHT_DECAY   = 0.05
 WARMUP_EPOCHS  = 10
 NUM_EPOCHS     = 100
-NUM_WORKERS    = 10
+NUM_WORKERS    = 14
 PRINT_FREQ     = 100
 SAVE_EVERY     = 10   # full checkpoint cadence (epochs)
 
@@ -119,7 +119,7 @@ class FPNDecoder(nn.Module):
         stage[0]:  32×32   C=192
         stage[1]:  16×16   C=384
         stage[2]:   8×8    C=768
-        stage[3]:   8×8    C=768  ← deepest; norm applied in _encode
+        stage[3]:   8×8    C=768  <- deepest; norm applied in _encode
 
     Decoder path:
         8×8   fuse stage[2] + stage[3]
@@ -168,7 +168,7 @@ class FPNDecoder(nn.Module):
 
     @staticmethod
     def _to_feat(tokens: torch.Tensor, h: int, w: int) -> torch.Tensor:
-        """(B, h*w, C) → (B, C, h, w)"""
+        """(B, h*w, C) -> (B, C, h, w)"""
         B, _, C = tokens.shape
         return tokens.transpose(1, 2).reshape(B, C, h, w)
 

@@ -1,0 +1,311 @@
+
+
+@import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&display=swap');
+
+
+// Tokens
+:host {
+  --bg:        #0f172a;
+  --surface:   #161616;
+  --border:    #2a2a2a;
+  --muted:     #444;
+  --text:      #d4d4d4;
+  --text-dim:  #666;
+  --accent:    #c8f542;   // electric lime - the one memorable pop of color
+  --accent-dk: #9bbe2b;
+  --danger:    #f5424b;
+  --font:      'IBM Plex Mono', monospace;
+  
+  display: block;
+  font-family: var(--font);
+  background: var(--bg);
+  color: var(--text);
+  min-height: 100vh;
+  padding: 2rem 1rem;
+  box-sizing: border-box;
+}
+
+
+:focus {
+  outline: none;
+}
+
+:focus-visible {
+  outline: 2px solid var(--surface);
+  outline-offset: 2px;
+}
+// Layout
+.terminal {
+  max-width: 680px;
+  margin: 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 1.25rem;
+}
+
+// Header
+.terminal__header {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.75rem;
+  letter-spacing: 0.06em;
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 0.75rem;
+}
+
+.terminal__prompt { color: var(--accent); font-weight: 600; }
+.terminal__sep    { color: var(--muted); }
+.terminal__route  { color: var(--text-dim); }
+
+.terminal__badge {
+  margin-left: auto;
+  font-size: 0.65rem;
+  letter-spacing: 0.12em;
+  padding: 0.15rem 0.5rem;
+  border: 1px solid var(--border);
+  color: var(--text-dim);
+  border-radius: 2px;
+  transition: color 0.2s, border-color 0.2s;
+
+  &--busy {
+    color: var(--accent);
+    border-color: var(--accent);
+    animation: pulse 1s ease-in-out infinite;
+  }
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50%       { opacity: 0.4; }
+}
+
+// Drop zone
+.dropzone {
+  border: 1px dashed var(--border);
+  border-radius: 4px;
+  padding: 2.5rem 1.5rem;
+  cursor: pointer;
+  text-align: center;
+  transition: border-color 0.15s, background 0.15s;
+  background: var(--surface);
+
+  &:hover, &--active {
+    border-color: var(--accent);
+    background: rgba(200, 245, 66, 0.04);
+  }
+
+  &--selected {
+    border-style: solid;
+    border-color: var(--accent);
+  }
+}
+
+.dropzone__icon {
+  display: block;
+  font-size: 2rem;
+  color: var(--muted);
+  margin-bottom: 0.75rem;
+  line-height: 1;
+}
+
+.dropzone--selected .dropzone__icon { color: var(--accent); }
+
+.dropzone__label {
+  margin: 0 0 0.35rem;
+  font-size: 0.8rem;
+  color: var(--text);
+}
+
+.dropzone__filename {
+  margin: 0 0 0.35rem;
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--accent);
+  word-break: break-all;
+}
+
+.dropzone__hint {
+  margin: 0;
+  font-size: 0.7rem;
+  color: var(--text-dim);
+}
+
+// Actions
+.actions {
+  display: flex;
+  gap: 0.75rem;
+}
+
+.btn {
+  font-family: var(--font);
+  font-size: 0.78rem;
+  letter-spacing: 0.05em;
+  padding: 0.55rem 1.2rem;
+  border-radius: 3px;
+  cursor: pointer;
+  border: 1px solid transparent;
+  transition: background 0.15s, color 0.15s, opacity 0.15s;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+
+  &:disabled { opacity: 0.35; cursor: not-allowed; }
+
+  &--primary {
+    background: var(--accent);
+    color: #0d0d0d;
+    font-weight: 600;
+    border-color: var(--accent);
+
+    &:not(:disabled):hover {
+      background: var(--accent-dk);
+      border-color: var(--accent-dk);
+    }
+  }
+
+  &--ghost {
+    background: transparent;
+    color: var(--text-dim);
+    border-color: var(--border);
+
+    &:hover { color: var(--text); border-color: var(--muted); }
+  }
+}
+
+// Spinner
+.spinner {
+  width: 0.75rem;
+  height: 0.75rem;
+  border: 2px solid rgba(0,0,0,0.25);
+  border-top-color: #0d0d0d;
+  border-radius: 50%;
+  animation: spin 0.7s linear infinite;
+  display: inline-block;
+}
+
+@keyframes spin { to { transform: rotate(360deg); } }
+
+// Message
+.message {
+  font-size: 0.78rem;
+  padding: 0.65rem 0.9rem;
+  border-radius: 3px;
+  display: flex;
+  align-items: baseline;
+  gap: 0.6rem;
+
+  &--error {
+    background: rgba(245, 66, 75, 0.08);
+    border: 1px solid rgba(245, 66, 75, 0.3);
+    color: var(--danger);
+  }
+}
+
+.message__label {
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  font-size: 0.65rem;
+  opacity: 0.8;
+}
+
+// Results
+.results {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+  animation: fadeUp 0.25s ease;
+}
+
+@keyframes fadeUp {
+  from { opacity: 0; transform: translateY(6px); }
+  to   { opacity: 1; transform: none; }
+}
+
+.results__meta {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  font-size: 0.72rem;
+}
+
+.results__label {
+  color: var(--text-dim);
+  letter-spacing: 0.1em;
+}
+
+.results__view {
+  color: var(--accent);
+  font-weight: 600;
+  letter-spacing: 0.05em;
+}
+
+// Table
+.table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.75rem;
+
+  th {
+    text-align: left;
+    color: var(--text-dim);
+    font-weight: 500;
+    letter-spacing: 0.1em;
+    padding: 0.4rem 0.6rem;
+    border-bottom: 1px solid var(--border);
+    font-size: 0.65rem;
+  }
+
+  td {
+    padding: 0.45rem 0.6rem;
+    border-bottom: 1px solid var(--border);
+    vertical-align: middle;
+  }
+
+  tbody tr {
+    transition: background 0.1s;
+
+    &:hover { background: rgba(255,255,255,0.02); }
+    &:last-child td { border-bottom: none; }
+  }
+
+  &__row--positive { background: rgba(200, 245, 66, 0.04); }
+  &__class { color: var(--text); font-weight: 500; }
+  &__thr   { color: var(--text-dim); }
+}
+
+// Bar
+.bar-wrap {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.bar {
+  height: 4px;
+  background: var(--border);
+  border-radius: 2px;
+  min-width: 2px;
+  max-width: 120px;
+  transition: width 0.4s ease;
+
+  &--positive { background: var(--accent); }
+}
+
+.bar__label { color: var(--text-dim); font-size: 0.72rem; }
+
+// Badge
+.badge {
+  font-size: 0.6rem;
+  letter-spacing: 0.1em;
+  padding: 0.1rem 0.4rem;
+  border-radius: 2px;
+  border: 1px solid var(--border);
+  color: var(--text-dim);
+
+  &--yes {
+    border-color: var(--accent);
+    color: var(--accent);
+    background: rgba(200, 245, 66, 0.08);
+  }
+}

@@ -3,6 +3,14 @@
 # Copyright (c) 2022 Microsoft
 # Licensed under The MIT License [see LICENSE for details]
 # Written by Ze Liu
+# Modified by Nicholas J. Calabro (2026):
+# - Added PyTorch scaled dot-product attention support
+# - Added optimized SDPA attention path for CUDA devices
+# - Added gated attention pooling classification head
+# - Added learnable temperature-scaled token attention
+# - Added attention map extraction utilities
+# - Modified architecture for chest X-ray classification
+# - Added grayscale medical imaging support
 # --------------------------------------------------------
 
 import torch
@@ -65,7 +73,7 @@ def window_reverse(windows, window_size, H, W):
 
 
 class WindowAttention(nn.Module):
-    r""" Window based multi-head self attention (W-MSA) module with relative position bias.
+    """ Window based multi-head self attention (W-MSA) module with relative position bias.
     It supports both of shifted and non-shifted window.
 
     Args:
@@ -138,43 +146,70 @@ class WindowAttention(nn.Module):
         self.softmax = nn.Softmax(dim=-1)
 
     def forward(self, x, mask=None):
-        """
-        Args:
-            x: input features with shape of (num_windows*B, N, C)
-            mask: (0/-inf) mask with shape of (num_windows, Wh*Ww, Wh*Ww) or None
-        """
         B_, N, C = x.shape
         qkv_bias = None
         if self.q_bias is not None:
-            qkv_bias = torch.cat((self.q_bias, torch.zeros_like(self.v_bias, requires_grad=False), self.v_bias))
+            qkv_bias = torch.cat((self.q_bias,
+                                torch.zeros_like(self.v_bias, requires_grad=False),
+                                self.v_bias))
         qkv = F.linear(input=x, weight=self.qkv.weight, bias=qkv_bias)
         qkv = qkv.reshape(B_, N, 3, self.num_heads, -1).permute(2, 0, 3, 1, 4)
-        q, k, v = qkv[0], qkv[1], qkv[2]  # make torchscript happy (cannot use tensor as tuple)
-
-        # cosine attention
-        attn = (F.normalize(q, dim=-1) @ F.normalize(k, dim=-1).transpose(-2, -1))
-        logit_scale = torch.clamp(self.logit_scale, max=torch.log(torch.tensor(1. / 0.01, device=self.logit_scale.device))).exp()
-        # logit_scale = torch.clamp(self.logit_scale, max=torch.log(torch.tensor(1. / 0.01))).exp()
-        attn = attn * logit_scale
+        q, k, v = qkv[0], qkv[1], qkv[2]
 
         relative_position_bias_table = self.cpb_mlp(self.relative_coords_table).view(-1, self.num_heads)
         relative_position_bias = relative_position_bias_table[self.relative_position_index.view(-1)].view(
-            self.window_size[0] * self.window_size[1], self.window_size[0] * self.window_size[1], -1)  # Wh*Ww,Wh*Ww,nH
-        relative_position_bias = relative_position_bias.permute(2, 0, 1).contiguous()  # nH, Wh*Ww, Wh*Ww
+            self.window_size[0] * self.window_size[1],
+            self.window_size[0] * self.window_size[1],
+            -1
+        ).permute(2, 0, 1).contiguous()
         relative_position_bias = 16 * torch.sigmoid(relative_position_bias)
-        attn = attn + relative_position_bias.unsqueeze(0)
 
-        if mask is not None:
-            nW = mask.shape[0]
-            attn = attn.view(B_ // nW, nW, self.num_heads, N, N) + mask.unsqueeze(1).unsqueeze(0)
-            attn = attn.view(-1, self.num_heads, N, N)
-            attn = self.softmax(attn)
+        logit_scale = torch.clamp(
+            self.logit_scale,
+            max=torch.log(torch.tensor(1. / 0.01, device=self.logit_scale.device))
+        ).exp()
+
+        attn_bias = relative_position_bias.unsqueeze(0).to(dtype=q.dtype, device=q.device)
+        attn_bias = attn_bias * logit_scale
+
+        use_sdpa = (
+            x.is_cuda
+            and hasattr(F, "scaled_dot_product_attention")
+        )
+
+        if use_sdpa:
+            if mask is not None:
+                nW = mask.shape[0]
+                attn_bias = attn_bias.unsqueeze(0).expand(B_ // nW, nW, self.num_heads, N, N).clone()
+                attn_bias = attn_bias + mask.unsqueeze(1).unsqueeze(0)
+                attn_bias = attn_bias.view(-1, self.num_heads, N, N)
+            else:
+                attn_bias = attn_bias.expand(B_, -1, -1, -1)
+
+            q = F.normalize(q, dim=-1)
+            k = F.normalize(k, dim=-1)
+
+            x = F.scaled_dot_product_attention(
+                q, k, v,
+                attn_mask=attn_bias,
+                dropout_p=self.attn_drop.p if self.training else 0.0,
+                is_causal=False,
+            )
+            x = x.transpose(1, 2).reshape(B_, N, C)
         else:
+            attn = (F.normalize(q, dim=-1) @ F.normalize(k, dim=-1).transpose(-2, -1))
+            attn = attn * logit_scale
+            attn = attn + attn_bias
+
+            if mask is not None:
+                nW = mask.shape[0]
+                attn = attn.view(B_ // nW, nW, self.num_heads, N, N) + mask.unsqueeze(1).unsqueeze(0)
+                attn = attn.view(-1, self.num_heads, N, N)
+
             attn = self.softmax(attn)
+            attn = self.attn_drop(attn)
+            x = (attn @ v).transpose(1, 2).reshape(B_, N, C)
 
-        attn = self.attn_drop(attn)
-
-        x = (attn @ v).transpose(1, 2).reshape(B_, N, C)
         x = self.proj(x)
         x = self.proj_drop(x)
         return x
@@ -501,6 +536,63 @@ class PatchEmbed(nn.Module):
         return flops
 
 
+class AttentionPoolingHead(nn.Module):
+    def __init__(self, dim, num_classes, hidden_dim=None, drop=0.0):
+        super().__init__()
+
+        hidden_dim = hidden_dim or max(dim // 2, 32)
+
+        # gated attention
+        self.attn_v = nn.Sequential(
+            nn.Linear(dim, hidden_dim),
+            nn.Tanh()
+        )
+
+        self.attn_u = nn.Sequential(
+            nn.Linear(dim, hidden_dim),
+            nn.Sigmoid()
+        )
+
+        self.attn_w = nn.Linear(hidden_dim, 1)
+
+        self.dropout = nn.Dropout(drop)
+
+        # learnable temperature scaling
+        self.temperature = nn.Parameter(torch.tensor(1.0))
+
+        self.classifier = nn.Linear(dim, num_classes)
+
+    def pool(self, x):
+        """
+        x: B, N, C
+        """
+
+        v = self.attn_v(x)
+        u = self.attn_u(x)
+
+        # gated attention
+        attn_logits = self.attn_w(v * u)
+
+        attn = torch.softmax(
+            attn_logits / self.temperature.clamp(min=0.05),
+            dim=1
+        )
+
+        pooled = (attn * x).sum(dim=1)
+        pooled = self.dropout(pooled)
+
+        return pooled, attn.squeeze(-1)
+
+    def forward(self, x):
+        pooled, _ = self.pool(x)
+        logits = self.classifier(pooled)
+        return logits
+
+    def forward_with_attention(self, x):
+        pooled, attn = self.pool(x)
+        logits = self.classifier(pooled)
+        return logits, attn
+
 class SwinTransformerV2(nn.Module):
     r""" Swin Transformer
         A PyTorch impl of : `Swin Transformer: Hierarchical Vision Transformer using Shifted Windows`  -
@@ -581,8 +673,12 @@ class SwinTransformerV2(nn.Module):
             self.layers.append(layer)
 
         self.norm = norm_layer(self.num_features)
-        self.avgpool = nn.AdaptiveAvgPool1d(1)
-        self.head = nn.Linear(self.num_features, num_classes) if num_classes > 0 else nn.Identity()
+        self.head = AttentionPoolingHead(
+            dim=self.num_features,
+            num_classes=num_classes,
+            hidden_dim=max(self.num_features // 2, 32),
+            drop=drop_rate
+        )
 
         self.apply(self._init_weights)
         for bly in self.layers:
@@ -614,17 +710,17 @@ class SwinTransformerV2(nn.Module):
         for layer in self.layers:
             x = layer(x)
 
-        x = self.norm(x)  # B N C
-        # No pooling and flattening
-        # x = self.avgpool(x.transpose(1, 2))  # B C 1
-        # x = torch.flatten(x, 1)
+        x = self.norm(x)
         return x
 
     def forward(self, x):
         x = self.forward_features(x)
-        x = self.head(x)
-        return x
+        return self.head(x)
 
+    def forward_with_attention(self, x):
+        x = self.forward_features(x)
+        return self.head.forward_with_attention(x)
+    
     def flops(self):
         flops = 0
         flops += self.patch_embed.flops()

@@ -1,30 +1,114 @@
-import numpy as np
-import pandas as pd
-import math
+"""
+© 2026 Nicholas J. Calabro. All rights reserved.
 
-from dataset import ALL_CLASSES
+Model Architecture
+- SwinWithView: Custom model class that extends a SwinV2 backbone,
+        incorporating multi-scale feature fusion,
+        class queries, and view conditioning
+- AsymmetricLoss: Custom loss function for multi-label classification,
+        with separate focusing parameters for positives and negative,
+        and optional label smoothing
+- UnfreezeScheduler: Manages gradual unfreezing of backbone layers
+- init_group_cosine: Function to calculate cosine-decayed learning rates for param groups
+"""
+import math
+import os
+
+from torch.optim.swa_utils import AveragedModel as SWAModel
+from torch.optim.swa_utils import AveragedModel, get_ema_multi_avg_fn
 import torch.nn as nn
 import torch
+import cv2
+import numpy as np
 
-from sklearn.model_selection import StratifiedShuffleSplit
 
-### Architecture Parameters
-# not required in train_save.py
-# but should be logged
+from classes import NUM_CLASSES
+from dataloader import BATCH_SIZE_TRAIN
+from swin_transformer_v2 import SwinTransformerV2
+from util import init_backbone
+
+
+### Architecture Parameters ###
+
+
+IMAGE_SIZE = 384
+SWIN_WINDOW_SIZE = 12
 
 FEATURE_DROPOUT    = 0.2
 CLASSIFIER_DROPOUT = 0.1
 
-HEAD_LR_MULTIPLIER = 6
+
+# Learning Rates
+BASE_LR = 6e-5
+# No pretraining for head
+# Multiply the BASE_LR to compensate
+
+LR_LAYER_DECAY = 0.8
+WEIGHT_DECAY = 0.08
+
+
+HEAD_LR_MULTIPLIER = 4
+
+
+STAGE_GATES_MULTIPLIER = 18.0
+
 VIEW_POSITION_SCALE = 0.2
 
 
-# Check point file labels that aren't required
-EXPECTED_MISSING = {
-    "relative_coords_table",
-    "relative_position_index",
-    "attn_mask"
+# high decay prevents noise from destabilizing training
+# may underfit if too high
+EMA_DECAY = 0.999
+
+
+### Asymmetric Loss ###
+# pos should stay > 0.5
+ASYMMETRIC_GAMMA_POS = 1.0
+ASYMMETRIC_GAMMA_NEG = 5.0
+ASYMMETRIC_CLIP      = 0.1
+
+ASYMMETRIC_LABEL_SMOOTH = 0.05
+
+
+### Scheduler Parameters ###
+
+# column 1: epoch to unfreeze at
+# column 2: layer index to unfreeze
+UNFREEZE_SCHEDULE = {
+    3:  3,   # was 5 - bring backbone in before head overfits
+    8:  2,
+    13: 1,
+    18: 0,
 }
+UNFREEZE_WARMUP_EPOCHS = 4
+
+# Initial warmup factor for newly unfrozen layers,
+# relative to their base_lr
+UNFREEZE_WARMUP_FACTOR = 0.1
+# Bump LR for unfrozen layers by the end of its warmup
+# Highly dependant on schedule timing
+UNFREEZE_BUMP_FACTOR = 1.2
+
+
+# Warmup backbone; previously trained
+WARMUP_EPOCHS = 3
+WARMUP_START_FACTOR = 0.3
+WARMUP_END_FACTOR = 1.0
+
+# SWA - starts after final unfreeze warmup completes (epoch 20 + 4 warmup)
+SWA_START_EPOCH = 25
+SWA_LR          = 2e-5   # flat LR during SWA, below cosine floor
+
+# Relative to each group's base_lr, not global eta_min
+ETA_MIN_RATIO = 0.18
+
+### End Tune Parameters  ###
+
+
+### Calculated Constants ###
+# Unlikely that these need to change
+BASE_BATCH_SIZE  = 16
+# keep set BASE_LR independant of BATCH_SIZE
+BASE_LR_ADJUSTED = BASE_LR * (BATCH_SIZE_TRAIN / BASE_BATCH_SIZE) ** 0.5
 
 
 # Model Wrapper
@@ -49,16 +133,20 @@ class SwinWithView(torch.nn.Module):
                 _x = layer(_x)
                 stage_dims.append(_x.shape[-1])  # actual channel dim per stage
         print("Detected stage dims:", stage_dims)
-        # self.stage_projs = nn.ModuleList([
-        #     nn.Linear(d, C) if d != C else nn.Identity()
-        #     for d in stage_dims
-        # ])
-        self.stage_projs = nn.ModuleList([nn.Conv2d(d, C, 1) for d in stage_dims[:-1]])
+    
+        self.stage_projs = nn.ModuleList([nn.Sequential(
+            nn.Conv2d(d, C // 4, 1),
+            nn.GELU(),
+            nn.Dropout(0.1),
+            nn.Conv2d(C // 4, C, 1),
+        ) for d in stage_dims[:-1]])
 
+        self.stage_gates = nn.Parameter(
+            torch.empty(len(stage_dims)-1
+        ).uniform_(-3.0, 3.0))
 
 
         self.class_queries = nn.Parameter(torch.randn(num_classes, C) * 0.02)
-        self.class_norm = nn.LayerNorm(C)
         self.attn_scale = C ** -0.5
         
         self.view_embed = torch.nn.Embedding(2, 32)
@@ -67,7 +155,9 @@ class SwinWithView(torch.nn.Module):
             torch.nn.GELU(),
             torch.nn.Linear(128, C * 2)
         )
-        self.view_scale = torch.nn.Parameter(torch.tensor(VIEW_POSITION_SCALE))
+        self.view_scale = torch.nn.Parameter(
+            torch.tensor(VIEW_POSITION_SCALE)
+        )
 
         # Init
 
@@ -75,14 +165,16 @@ class SwinWithView(torch.nn.Module):
         nn.init.zeros_(self.view_mlp[-1].bias)
         nn.init.trunc_normal_(self.class_queries, std=0.02)
 
-        for proj in self.stage_projs:
-            if isinstance(proj, (nn.Linear, nn.Conv2d)):
-                nn.init.xavier_uniform_(proj.weight.view(proj.weight.size(0), -1)
-                                        if isinstance(proj, nn.Conv2d) else proj.weight)
-                nn.init.zeros_(proj.bias)
+        for proj_seq in self.stage_projs:
+            for module in proj_seq.modules():
+                if isinstance(module, nn.Conv2d):
+                    nn.init.xavier_uniform_(
+                        module.weight.view(module.weight.size(0), -1)
+                    )
+                    nn.init.zeros_(module.bias)
 
-        self.stage_temps = nn.Parameter(torch.ones(len(self.backbone.layers)))
-
+        self.stage_temps = nn.Parameter(torch.ones(1))
+        self.class_norm = nn.LayerNorm(C)
 
         self.class_head = nn.Sequential(
             nn.LayerNorm(C),
@@ -92,6 +184,7 @@ class SwinWithView(torch.nn.Module):
             nn.Dropout(CLASSIFIER_DROPOUT),
             nn.Linear(256, 1),
         )
+
 
 
     def forward(self, x, view_id):
@@ -110,31 +203,35 @@ class SwinWithView(torch.nn.Module):
         # Project each early stage to C via Conv2d and flatten back to tokens
         # stage_projs has len(layers)-1 entries, one per early stage
         stage_tokens = []
-        for feat, proj in zip(early_feats, self.stage_projs):
+        # In forward, replace the stage_tokens construction:
+        for i, (feat, proj) in enumerate(zip(early_feats, self.stage_projs)):
             B, N, D = feat.shape
             h = w = int(N ** 0.5)
             feat_2d = feat.reshape(B, h, w, D).permute(0, 3, 1, 2)
+            # Pool down to same spatial size as final stage (7x7)
+            feat_2d = torch.nn.functional.adaptive_avg_pool2d(feat_2d, output_size=7)
             projected = proj(feat_2d).flatten(2).transpose(1, 2)
-            projected = self.class_norm(projected)                 # mirror forward()
-            stage_tokens.append(projected)
+            gate = 1.0 + torch.tanh(self.stage_gates[i])
+            stage_tokens.append(projected * gate)
 
         x_normed = self.backbone.norm(x)
-        x_normed = self.class_norm(x_normed)
-        N_final = x_normed.shape[1]
 
-        # Apply stage_temps exactly as in forward()
-        scaled_tokens = []
-        for i, tokens in enumerate(stage_tokens):
-            scaled_tokens.append(tokens * self.stage_temps[i].abs())
-        scaled_tokens.append(x_normed * self.stage_temps[-1].abs())
-        all_tokens = torch.cat(scaled_tokens, dim=1)
+        all_tokens = torch.cat(
+            stage_tokens +
+            [x_normed * torch.nn.functional.softplus(self.stage_temps[0])],
+            dim=1
+        )
         
+        all_tokens = self.class_norm(all_tokens)
         
         # Class query cross-attention over all scales simultaneously
         B = all_tokens.size(0)
         Q = self.class_queries.unsqueeze(0).expand(B, -1, -1)       # (B, num_classes, C)
         attn = torch.bmm(Q, all_tokens.transpose(1, 2)) * self.attn_scale  # (B, num_classes, N_total)
         attn = torch.softmax(attn, dim=-1)
+        # attention dropout
+        attn = torch.nn.functional.dropout(attn, p=0.1, training=self.training)
+        self.last_attention = attn.detach() 
         class_feats = torch.bmm(attn, all_tokens)                    # (B, num_classes, C)
 
         # View conditioning
@@ -145,20 +242,26 @@ class SwinWithView(torch.nn.Module):
         class_feats = class_feats * (1 + scale * gamma.unsqueeze(1)) + beta.unsqueeze(1)
 
         logits = self.class_head(class_feats).squeeze(-1)            # (B, num_classes)
-        return logits    
-
+        return logits
+    
+    def print_stage_gates(self):
+        raw = self.stage_gates.detach().cpu()
+        act = (1.0 + torch.tanh(self.stage_gates)).detach().cpu()
+        print("stage_gates raw:", [f"{x:.6f}" for x in raw.tolist()])
+        print("stage_gates act:", [f"{x:.6f}" for x in act.tolist()])
 
 
 # Loss
 class AsymmetricLoss(nn.Module):
     def __init__(self, gamma_pos=1, gamma_neg=4, clip=0.05,
-                 eps=1e-8,  label_smooth=0.05):
+                 eps=1e-8,  label_smooth=0.05, weight=None):
         super().__init__()
         self.gamma_pos = gamma_pos
         self.gamma_neg = gamma_neg
         self.clip = clip
         self.eps = eps
         self.label_smooth = label_smooth
+        self.weight = weight
 
 
     def forward(self, logits, targets):
@@ -181,30 +284,222 @@ class AsymmetricLoss(nn.Module):
         loss_pos = targets * torch.log(probs.clamp(min=self.eps)) * pos_focal
         loss_neg = (1 - targets) * torch.log(probs_neg.clamp(min=self.eps)) * neg_focal
 
-        loss = -(loss_pos + loss_neg).mean()
-        return loss
+        loss = -(loss_pos + loss_neg)          # (B, C)
+        if self.weight is not None:
+            loss = loss * self.weight
+        return loss.mean()
 
+
+
+class MultiClassifier:
+    def __init__(self, backbone_path, device, label_matrix, train_idx):
+        self.device = device
+        self.temperature_scaler = None
+
+        self.base = self._build_backbone()
+        self.model = SwinWithView(
+            backbone=self.base,
+            num_classes=NUM_CLASSES
+        ).to(self.device)
+        self.raw_model = self._wrap_model(self.model)
+
+        self._sanity_check_forward()
+        init_backbone(self.model, backbone_path)
+
+        self.ema_model = AveragedModel(
+            model=self.raw_model,
+            multi_avg_fn=get_ema_multi_avg_fn(decay=EMA_DECAY),
+        )        
+
+        self.param_group = init_param_groups(
+            model=self.raw_model,
+            base_lr=BASE_LR_ADJUSTED,
+            decay=LR_LAYER_DECAY,
+        )
+        self.optimizer = torch.optim.AdamW(
+            self.param_group,
+            weight_decay=WEIGHT_DECAY,
+        )
+
+        self.criterion = self._build_criterion(label_matrix, train_idx)
+
+    def _build_backbone(self):
+        patch_grid = IMAGE_SIZE // 4
+        assert patch_grid % SWIN_WINDOW_SIZE == 0, (
+            f"patch grid {patch_grid} not divisible by window_size {SWIN_WINDOW_SIZE} - "
+            f"valid sizes: {[SWIN_WINDOW_SIZE * 4 * i for i in range(1, 20) if (SWIN_WINDOW_SIZE * 4 * i) >= 192]}"
+        )
+
+        return SwinTransformerV2(
+            img_size=IMAGE_SIZE,
+            patch_size=4,
+            in_chans=3,
+            embed_dim=96,
+            depths=[2, 2, 18, 2],
+            num_heads=[3, 6, 12, 24],
+            window_size=SWIN_WINDOW_SIZE,
+            mlp_ratio=4.0,
+            qkv_bias=True,
+            drop_rate=0.0,
+            attn_drop_rate=0.0,
+            drop_path_rate=0.2,
+            ape=False,
+            patch_norm=True,
+            use_checkpoint=False,
+        )
+
+   
+    def _wrap_model(self, model):
+        if torch.cuda.device_count() > 1:
+            print(f"Using {torch.cuda.device_count()} GPUs")
+            self.model = torch.nn.DataParallel(model)  # update self.model
+            return model                                # raw_model = unwrapped
+        return model
+
+    def _unwrapped_model(self):
+        return self.model.module if isinstance(self.model, torch.nn.DataParallel) else self.model
+
+    def _sanity_check_forward(self):
+        with torch.no_grad():
+            x = torch.randn(1, 3, IMAGE_SIZE, IMAGE_SIZE, device=self.device)
+            v = torch.zeros(1, dtype=torch.long, device=self.device)
+            out = self.raw_model(x, v)
+            print("Model output shape:", out.shape)
+
+    def _build_criterion(self, label_matrix, train_idx):
+        class_freq = label_matrix[train_idx].mean(axis=0)
+        class_loss_weights = torch.tensor(
+            1.0 / (class_freq + 1e-4) ** 0.3,
+            dtype=torch.float32,
+            device=self.device,
+        )
+
+        return AsymmetricLoss(
+            gamma_pos=ASYMMETRIC_GAMMA_POS,
+            gamma_neg=ASYMMETRIC_GAMMA_NEG,
+            clip=ASYMMETRIC_CLIP,
+            label_smooth=ASYMMETRIC_LABEL_SMOOTH,
+            weight=class_loss_weights,
+        )
+    
+
+    def load_best_checkpoint(self, path: str) -> dict:
+        ckpt = torch.load(path, map_location=self.device, weights_only=False)
+        self._unwrapped_model().load_state_dict(ckpt["model"])
+        self.ema_model.module.load_state_dict(ckpt["model"])
+
+        # load temperature scaler if present
+        if "temperature" in ckpt:
+            temps = torch.tensor(ckpt["temperature"], device=self.device)
+            scaler = PerClassTemperatureScaler(len(temps)).to(self.device)
+            scaler.temps = torch.nn.Parameter(temps)
+            self.temperature_scaler = scaler
+
+        return ckpt
+
+    def load_thresholds(self, path: str) -> np.ndarray:
+        if not os.path.exists(path):
+            raise FileNotFoundError(f"No checkpoint found at {path}")
+
+        ckpt = torch.load(path, map_location=self.device, weights_only=False)
+        raw = ckpt.get("thresholds")
+        if raw is None:
+            print("WARNING: no thresholds in checkpoint; defaulting to 0.5")
+            return np.full(NUM_CLASSES, 0.5, dtype=np.float32)
+        return np.array(raw, dtype=np.float32)
+
+    def view_scale(self) -> float:
+        return torch.sigmoid(self.ema_model.module.view_scale).item() * 2.0
+
+    def fit_and_attach_temperature(self, val_loader, num_classes: int):
+        scaler = PerClassTemperatureScaler(num_classes).to(self.device)
+        fit_temperature(self._unwrapped_model(), val_loader, self.device, scaler)
+        self.temperature_scaler = scaler
+        return scaler
+    
+
+class PerClassTemperatureScaler(nn.Module):
+    def __init__(self, num_classes):
+        super().__init__()
+        self.temps = nn.Parameter(torch.ones(num_classes))
+
+    def forward(self, logits):
+        return logits / self.temps.clamp(min=0.1)
+    
+
+class Scheduler:
+    def __init__(self, classifier, max_epochs):
+        self.max_epochs = max_epochs
+        self.optimizer  = classifier.optimizer
+        self.in_swa     = False
+        self.raw_model = classifier.raw_model
+        self.swa_model = SWAModel(self.raw_model) 
+
+
+        self.layer_to_idx = {
+            layer: i
+            for i, layer in enumerate(classifier.raw_model.backbone.layers)
+        }
+        self.warmup_scheduler = torch.optim.lr_scheduler.LinearLR(
+            self.optimizer,
+            start_factor=WARMUP_START_FACTOR,
+            end_factor=WARMUP_END_FACTOR,
+            total_iters=WARMUP_EPOCHS,
+        )
+        self.unfreeze_scheduler = UnfreezeScheduler(
+            layer_to_idx=self.layer_to_idx,
+            optimizer=self.optimizer,
+        )
+
+    def step(self, epoch):
+        self.unfreeze_scheduler.step(epoch)
+
+        if epoch >= SWA_START_EPOCH:
+            if not self.in_swa:
+                print(f"  Switching to SWA flat LR={SWA_LR:.2e} at epoch {epoch}")
+                for group in self.optimizer.param_groups:
+                    group["lr"] = SWA_LR
+                self.in_swa = True
+            # LR stays flat during SWA - skip cosine and unfreeze scaling
+
+        elif epoch <= WARMUP_EPOCHS:
+            self.warmup_scheduler.step()
+        else:
+            for group in self.optimizer.param_groups:
+                group["lr"] = init_group_cosine(
+                    group, epoch, self.max_epochs, ETA_MIN_RATIO, WARMUP_EPOCHS
+                )
+            self.unfreeze_scheduler.apply_scales()
+            
+
+    def is_swa(self):
+        return self.in_swa
+
+    def min_stop_epoch(self):
+        return max(self.unfreeze_scheduler.schedule) + UNFREEZE_WARMUP_EPOCHS
 
 class UnfreezeScheduler:
-    def __init__(self, layer_to_idx, optimizer, schedule, warmup_epochs):
-        self.epoch = 1
+    def __init__(self, layer_to_idx, optimizer):
         self.optimizer = optimizer
-        self.schedule = schedule
         self.layer_to_idx = layer_to_idx
-        self.warmup_epochs = warmup_epochs
+        self.group_warmup_remaining = {}
+        self.schedule = UNFREEZE_SCHEDULE
+        self.warmup_epochs = UNFREEZE_WARMUP_EPOCHS
         # freeze layers
         for layer, idx in layer_to_idx.items():
             for p in layer.parameters():
                 p.requires_grad = False
 
     # Unfreeze layers per schedule
-    def step(self, group_warmup_remaining):
+    def step(self, epoch):
         newly_unfrozen = set()
-        if self.epoch in self.schedule:
-            if group_warmup_remaining:
-                print(f"WARNING: Unfreezing at epoch {self.epoch} but warmup still active for layers: {list(group_warmup_remaining.keys())}")
+        if epoch in self.schedule:
+            if self.group_warmup_remaining:
+                print(f"WARNING: Unfreezing at epoch {epoch}, "
+                      f"but warmup still active for layers: "
+                      f"{list(self.group_warmup_remaining.keys())}")
             
-            threshold = self.schedule[self.epoch]
+            threshold = self.schedule[epoch]
             # Check no warmup is still in progress
             for layer, idx in self.layer_to_idx.items():
                 if idx >= threshold:
@@ -220,11 +515,46 @@ class UnfreezeScheduler:
                             if g.get("layer_idx") == -1)
                     cosine_scale = ref["lr"] / ref["base_lr"]
                     group["lr"] = group["base_lr"] * cosine_scale
-                    group_warmup_remaining[lidx] = self.warmup_epochs
-        self.epoch += 1
+                    self.group_warmup_remaining[lidx] = self.warmup_epochs
+
+
+    def apply_scales(self):
+        # Match the cosine position of the always-live head group
+        ref = next(g for g in self.optimizer.param_groups
+                if g.get("layer_idx") == -1)
+        cosine_scale = ref["lr"] / ref["base_lr"]
+
+        for group in self.optimizer.param_groups:
+            lidx = group.get("layer_idx", -1)
+            if lidx in self.group_warmup_remaining:
+                epochs_done = UNFREEZE_WARMUP_EPOCHS - self.group_warmup_remaining[lidx] + 1
+                warmup_scale = (UNFREEZE_WARMUP_FACTOR +
+                            (UNFREEZE_BUMP_FACTOR - UNFREEZE_WARMUP_FACTOR)
+                            * (epochs_done / UNFREEZE_WARMUP_EPOCHS))
+                group["lr"] = group["base_lr"] * cosine_scale * warmup_scale  # set, not multiply
+
+        for k in list(self.group_warmup_remaining):
+            self.group_warmup_remaining[k] -= 1
+            if self.group_warmup_remaining[k] <= 0:
+                del self.group_warmup_remaining[k]
+   
+
+    def restore_to_epoch(self, epoch):
+        """Replay all unfreeze events that should have fired before this epoch."""
+        for unfreeze_epoch in sorted(self.schedule.keys()):
+            if unfreeze_epoch < epoch:
+                threshold = self.schedule[unfreeze_epoch]
+                for layer, idx in self.layer_to_idx.items():
+                    if idx >= threshold:
+                        for p in layer.parameters():
+                            p.requires_grad = True
+                print(f"  Restored: unfroze layers >= {threshold} (epoch {unfreeze_epoch})")
+
+    def get_end_epoch(self):
+        return max(UNFREEZE_SCHEDULE.keys())
 
 def layer_unfreeze_epoch(layer_idx, schedule):
-    if layer_idx < 0:        # head, view embed, attn_pool — always live
+    if layer_idx < 0:        # head, view embed, attn_pool - always live
         return 1
     for epoch in sorted(schedule.keys()):
         if layer_idx >= schedule[epoch]:
@@ -232,33 +562,105 @@ def layer_unfreeze_epoch(layer_idx, schedule):
     return 1
 
 
-# Extracts labels and view_ids, and filters to PA/AP images only
-def init_metadata(path):
-    df = pd.read_csv(path)
-    df = df[["Image Index", "Finding Labels",
-             "View Position", "Patient ID"]].copy()
-    df["view_id"] = df["View Position"].map({"PA": 0, "AP": 1}).fillna(0).astype(int)
-    df = df[df["View Position"].isin(["PA", "AP"])].reset_index(drop=True)
-    df["labels"] = df["Finding Labels"].str.split("|")
-    
-    return df
+class TemperatureScaler(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.temperature = nn.Parameter(torch.ones(1))
 
-# Use GPU if available
-# Displays device info and clears cache to avoid fragmentation issues
-def init_device():
-    torch.cuda.empty_cache()
-    torch.cuda.ipc_collect()
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print("CUDA available:", torch.cuda.is_available())
-    print("Device count:", torch.cuda.device_count())
-    for i in range(torch.cuda.device_count()):
-        print(f"  [{i}]", torch.cuda.get_device_name(i))
-    print("Using device:", device)
-    print("**Device: ", device)
-    print(torch.cuda.get_device_capability())
-    torch.backends.cudnn.benchmark = True
+    def forward(self, logits):
+        return logits / self.temperature.clamp(min=0.1)
 
-    return device
+def fit_temperature(model, val_loader, device, scaler):
+    optimizer = torch.optim.LBFGS(
+        scaler.parameters(), lr=0.01, max_iter=50
+    )
+    all_logits, all_labels = [], []
+
+    model.eval()
+    with torch.no_grad():
+        for imgs, lbls, views in val_loader:
+            imgs, views = imgs.to(device), views.to(device)
+            logits = model(imgs, views)
+            all_logits.append(logits.cpu())
+            all_labels.append(lbls)
+
+    logits = torch.cat(all_logits)
+    labels = torch.cat(all_labels)
+
+    def eval_closure():
+        optimizer.zero_grad()
+        scaled = scaler(logits.to(device))
+        loss = nn.functional.binary_cross_entropy_with_logits(
+            scaled, labels.to(device)
+        )
+        loss.backward()
+        return loss
+
+    optimizer.step(eval_closure)
+    print(f"Learned temperature: {scaler.temps.mean().item():.4f}")
+    # no return needed - scaler is modified in place
+
+
+
+
+clahe = cv2.createCLAHE(
+    clipLimit=2.0,
+    tileGridSize=(8, 8)
+)
+
+# fix: re-standardize after CLAHE
+def apply_clahe(imgs):
+    out = []
+    for img in imgs:
+        gray = img[0].cpu().numpy()
+        gray = np.clip(gray * 255.0, 0, 255).astype(np.uint8)
+        gray = clahe.apply(gray)
+        gray = gray.astype(np.float32) / 255.0
+        gray = np.stack([gray, gray, gray], axis=0)
+        t = torch.from_numpy(gray).float()
+        # re-standardize to match PerImageStandardize
+        t = (t - t.mean()) / (t.std() + 1e-6)
+        out.append(t)
+    return torch.stack(out).to(imgs.device)
+
+
+def tta_predict(model, imgs, views):
+    """
+    Minimal chest X-ray TTA:
+      - original
+      - horizontal flip
+      - CLAHE
+      - CLAHE + flip
+
+    Returns averaged probabilities.
+    """
+
+    # assumes you already have this implemented
+    clahe_imgs = apply_clahe(imgs.clone())
+
+    aug_batches = [
+        imgs,
+        torch.flip(imgs, dims=[3]),
+        clahe_imgs,
+        torch.flip(clahe_imgs, dims=[3]),
+    ]
+
+    probs_list = []
+
+    with torch.no_grad():
+
+        for aug_imgs in aug_batches:
+
+            logits = model(aug_imgs, views)
+
+            probs = torch.sigmoid(logits)
+
+            probs_list.append(probs)
+
+    probs = torch.stack(probs_list, dim=0).mean(dim=0)
+
+    return probs
+
 
 
 def init_group_cosine(group, epoch, total_epochs, eta_min_ratio, warmup_epochs):
@@ -270,94 +672,10 @@ def init_group_cosine(group, epoch, total_epochs, eta_min_ratio, warmup_epochs):
     return eta_min + (group["base_lr"] - eta_min) * cos
 
 
-def init_split(df, label_matrix):
-    patient_ids = df["Patient ID"].unique()
-
-    patient_label_matrix = np.zeros((len(patient_ids), len(ALL_CLASSES)), dtype=int)
-    patient_id_to_idx = {pid: i for i, pid in enumerate(patient_ids)}
-    for img_idx, row in df.iterrows():
-        p = patient_id_to_idx[row["Patient ID"]]
-        patient_label_matrix[p] |= label_matrix[img_idx]
-
-    # Collapse multilabel to a single stratification key via label combination hash
-    # Rare combos get lumped into a single "other" bin to avoid singleton strata
-    combo_strings = ["_".join(map(str, row)) for row in patient_label_matrix]
-    from collections import Counter
-    counts = Counter(combo_strings)
-    MIN_COMBO_COUNT = 2
-    strat_labels = [c if counts[c] >= MIN_COMBO_COUNT else "__other__" for c in combo_strings]
-
-    sss = StratifiedShuffleSplit(n_splits=1, test_size=0.15, random_state=42)
-    train_patient_idx, val_patient_idx = next(sss.split(patient_ids, strat_labels))
-
-    train_patients = set(patient_ids[train_patient_idx])
-    value_patients = set(patient_ids[val_patient_idx])
-
-    train_idx = df[df["Patient ID"].isin(train_patients)].index.to_numpy()
-    value_idx = df[df["Patient ID"].isin(value_patients)].index.to_numpy()
-
-    for split_name, idx in [("train", train_idx), ("val", value_idx)]:
-        n_hernia = label_matrix[idx, ALL_CLASSES.index("Hernia")].sum()
-        print(f"{split_name} Hernia positives: {n_hernia}")
-
-    return train_idx, value_idx
-
-# Loads the SSL checkpoint from the path SSL_CKPT
-def init_ckpt(model, path):
-    raw = torch.load(path, map_location="cpu", weights_only=False)
-
-    if not isinstance(raw, dict):
-        raise ValueError(f"Unexpected checkpoint format: {type(raw)}")
-
-    # Unwrap outer dict if present
-    state = raw.get("model", raw)
-
-    sample_keys = list(state.keys())[:6]
-    print("State dict sample keys:", sample_keys)
-
-    # Discriminate: training checkpoints (SwinWithView) have backbone.* keys
-    # SSL/SimMIM checkpoints have bare patch_embed.*, layers.* keys
-    is_training_ckpt = any(k.startswith("backbone.") for k in state.keys())
-
-    if is_training_ckpt:
-        print("Detected training checkpoint, loading full SwinWithView state")
-        model.load_state_dict(state)
-        return raw.get("epoch", None), raw.get("best_val", None)
-
-    # SSL checkpoint - strip encoder prefix if present (some SimMIM releases use it)
-    if any(k.startswith("encoder.") for k in state):
-        print("Stripping 'encoder.' prefix")
-        state = {k[len("encoder."):]: v
-                 for k, v in state.items()
-                 if k.startswith("encoder.")}
-
-    ckpt = {
-        k.replace("rpe_mlp", "cpb_mlp"): v
-        for k, v in state.items()
-        if "relative_coords_table" not in k
-        and "relative_position_index" not in k
-        and "attn_mask" not in k
-        and k not in ("head.weight", "head.bias")
-    }
-
-    missing, unexpected = model.backbone.load_state_dict(ckpt, strict=False)
-    unexpected_missing = [k for k in missing if not any(tag in k for tag in EXPECTED_MISSING)]
-
-    if unexpected_missing:
-        print(f"WARNING: {len(unexpected_missing)} unexpected missing keys:")
-        for k in unexpected_missing:
-            print(f"  {k}")
-    else:
-        print(f"SSL checkpoint loaded OK - {len(missing)} expected missing, {len(unexpected)} unexpected")
-
-    return None, None
-
-
 # Param Groups
-# This controled learning rate for different parts of the model,
+# This controls learning rate for different parts of the model,
 # and allows for gradual unfreezing of the backbone with a warmup.
-def init_param_groups(model, base_lr=1e-4, decay=0.8, schedule=None):
-    schedule = schedule or {}
+def init_param_groups(model, base_lr=1e-4, decay=0.8):
     groups = []
     seen = set()
 
@@ -369,7 +687,7 @@ def init_param_groups(model, base_lr=1e-4, decay=0.8, schedule=None):
             seen.add(pid)
             (no_wd if p.ndim <= 1 else wd).append(p)
 
-        ue = layer_unfreeze_epoch(layer_idx, schedule)
+        ue = layer_unfreeze_epoch(layer_idx, UNFREEZE_SCHEDULE)
 
         for bucket, wdv in [(wd, weight_decay), (no_wd, 0.0)]:
             if bucket:
@@ -392,11 +710,16 @@ def init_param_groups(model, base_lr=1e-4, decay=0.8, schedule=None):
 
     add(model.backbone.patch_embed.parameters(), base_lr * (decay ** (len(layers)-1)), layer_idx=0)
     add(model.backbone.norm.parameters(), base_lr, layer_idx=-1)
-    add(model.class_head.parameters(), base_lr * HEAD_LR_MULTIPLIER, layer_idx=-1)
-    add(model.stage_projs.parameters(), base_lr * HEAD_LR_MULTIPLIER, layer_idx=-1)
+    add(model.class_head.parameters(),  base_lr * HEAD_LR_MULTIPLIER, layer_idx=-1, weight_decay=0.08)
+    add(
+        [model.stage_gates],
+        base_lr * HEAD_LR_MULTIPLIER * STAGE_GATES_MULTIPLIER,
+        layer_idx=-1
+    )
+    add(model.stage_projs.parameters(), base_lr * HEAD_LR_MULTIPLIER * 2.0, layer_idx=-1, weight_decay=0.08)
+    add(model.class_norm.parameters(),  base_lr * HEAD_LR_MULTIPLIER, layer_idx=-1, weight_decay=0.08)
     add(model.view_embed.parameters(), base_lr, -1)
     add(model.view_mlp.parameters(), base_lr, -1)
-    add(model.class_norm.parameters(), base_lr, layer_idx=-1)
     add([model.class_queries, model.view_scale, model.stage_temps],
             base_lr * HEAD_LR_MULTIPLIER, layer_idx=-1)
 
@@ -408,8 +731,30 @@ def init_param_groups(model, base_lr=1e-4, decay=0.8, schedule=None):
     return groups
 
 def print_architecture_parameters():
-    print("Architecture parameters:")
-    print(f"  FEATURE_DROPOUT: {FEATURE_DROPOUT}")
-    print(f"  CLASSIFIER_DROPOUT: {CLASSIFIER_DROPOUT}")
-    print(f"  HEAD_LR_MULTIPLIER: {HEAD_LR_MULTIPLIER}")
-    print(f"  VIEW_POSITION_SCALE: {VIEW_POSITION_SCALE}")
+    print("Architecture Parameters:")
+    print("  BASE_LR", BASE_LR)
+    print("  BASE_LR_ADJUSTED", BASE_LR_ADJUSTED)
+    print("  HEAD_LR_MULTIPLIER", HEAD_LR_MULTIPLIER)
+    print("  STAGE_GATES_MULTIPLIER", STAGE_GATES_MULTIPLIER)
+    print("  LR_LAYER_DECAY", LR_LAYER_DECAY)
+    print("  FEATURE_DROPOUT", FEATURE_DROPOUT)
+    print("  CLASSIFIER_DROPOUT",  CLASSIFIER_DROPOUT)
+    print("  VIEW_POSITION_SCALE", VIEW_POSITION_SCALE)
+    print("  IMAGE_SIZE", IMAGE_SIZE)
+    print("  SWIN_WINDOW_SIZE", SWIN_WINDOW_SIZE)
+    print("  ASYMMETRIC_CLIP", ASYMMETRIC_CLIP)
+    print("  ASYMMETRIC_GAMMA_NEG", ASYMMETRIC_GAMMA_NEG)
+    print("  ASYMMETRIC_GAMMA_POS", ASYMMETRIC_GAMMA_POS)
+    print("  ASYMMETRIC_LABEL_SMOOTH", ASYMMETRIC_LABEL_SMOOTH)
+    print("  WEIGHT_DECAY", WEIGHT_DECAY)
+    print("  EMA_DECAY", EMA_DECAY)
+    print("  UNFREEZE_WARMUP_EPOCHS", UNFREEZE_WARMUP_EPOCHS)
+    print("  UNFREEZE_WARMUP_FACTOR", UNFREEZE_WARMUP_FACTOR)
+    print("  UNFREEZE_BUMP_FACTOR", UNFREEZE_BUMP_FACTOR)
+    print("  UNFREEZE_SCHEDULE", UNFREEZE_SCHEDULE)
+    print("  WARMUP_EPOCHS", WARMUP_EPOCHS)
+    print("  WARMUP_START_FACTOR", WARMUP_START_FACTOR)
+    print("  WARMUP_END_FACTOR", WARMUP_END_FACTOR)
+    print("  SWA_START_EPOCH", SWA_START_EPOCH)
+    print("  SWA_LR", SWA_LR)
+    print("  ETA_MIN_RATIO", ETA_MIN_RATIO)

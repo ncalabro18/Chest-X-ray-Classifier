@@ -1,0 +1,24 @@
+ncalabro.net {
+
+    encode gzip zstd
+
+    reverse_proxy nginx:4000
+
+    header {
+
+        Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
+
+        X-Content-Type-Options "nosniff"
+
+        X-Frame-Options "DENY"
+
+        Referrer-Policy "strict-origin-when-cross-origin"
+    }
+}
+
+localhost {
+
+    encode gzip zstd
+
+    reverse_proxy frontend:4000
+}
