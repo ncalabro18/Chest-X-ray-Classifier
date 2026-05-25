@@ -1,0 +1,15 @@
+.app-shell {
+  padding: 0 16px;
+}
+
+@media (min-width: 768px) {
+  .app-shell {
+    padding: 0 24px;
+  }
+}
+
+@media (min-width: 1200px) {
+  .app-shell {
+    padding: 0 40px;
+  }
+}

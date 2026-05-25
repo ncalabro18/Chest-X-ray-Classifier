@@ -1,3 +1,6 @@
+/*
+© 2026 Nicholas J. Calabro. All rights reserved.
+*/
 import {
   Component, signal, computed, ElementRef,
   ViewChild, OnInit, OnDestroy,
@@ -6,7 +9,7 @@ import { HttpClient, HttpErrorResponse } from '@angular/common/http';
 import { CommonModule } from '@angular/common';
 import { HttpClientModule } from '@angular/common/http';
 import { Subscription, interval } from 'rxjs';
-import { RouterLink } from '@angular/router';
+import { ClassifierStateService } from '../classifier-state';
 
 
 // Types
@@ -24,8 +27,8 @@ export interface Prediction {
 export interface ClassifierPayload {
   predictions: Record<string, Prediction>;
   view: ViewPosition;
-  attention_map?: string;
-  grad_cam?: string;
+  attention_maps?: Record<string, string>;
+  saliency_maps?:  Record<string, string>;
 }
 
 export interface SubmitResponse {
@@ -43,7 +46,7 @@ export interface SubmitResponse {
 @Component({
   selector: 'app-submit',
   standalone: true,
-  imports: [CommonModule, HttpClientModule, RouterLink],
+  imports: [CommonModule, HttpClientModule],
   templateUrl: './submit.html',
   styleUrl: './submit.scss',
 })
@@ -56,7 +59,6 @@ export class SubmitComponent implements OnInit, OnDestroy {
   private statusPoll?: Subscription;
 
   imagePreviewUrl = signal<string | null>(null);
-  sidebarOpen = signal(true);
 
 
   // State
@@ -67,6 +69,40 @@ export class SubmitComponent implements OnInit, OnDestroy {
   selectedFile = signal<File | null>(null);
   selectedView = signal<ViewPosition>('PA');
   serverStatus = signal<ServerStatus>('unknown');
+
+
+  attention_maps = computed(() => this.result()?.attention_maps ?? {});
+
+  selectedAttentionClass = signal<string | null>(null);
+
+  saliency_maps = computed(() => this.result()?.saliency_maps ?? {});
+
+  // 'attention' | 'saliency' - which map type is shown
+  activeMapType = signal<'attention' | 'saliency'>('attention');
+
+  setMapType(t: 'attention' | 'saliency'): void {
+    this.activeMapType.set(t);
+  }
+
+  // Replace the existing activeAttentionMap computed:
+  activeMap = computed(() => {
+    const cls  = this.selectedAttentionClass() ?? this.positiveClassesWithMaps()[0];
+    const maps = this.activeMapType() === 'saliency'
+      ? this.saliency_maps()
+      : this.attention_maps();
+    return cls ? (maps[cls] ?? null) : null;
+  });
+
+  // Update positiveClassesWithMaps to union both map sets:
+  positiveClassesWithMaps = computed(() =>
+    this.positiveFindings()
+      .map(([name]) => name)
+      .filter(name => !!this.attention_maps()[name] || !!this.saliency_maps()[name])
+  );
+
+  setAttentionClass(cls: string): void {
+    this.selectedAttentionClass.set(cls);
+  }
 
 
   // Derived
@@ -92,8 +128,10 @@ export class SubmitComponent implements OnInit, OnDestroy {
   // True only when at least one pathology (not just No Finding) is positive
   hasPathologyPositives = computed(() => this.pathologyCount() > 0);
 
-  constructor(private http: HttpClient) {}
-
+  constructor(
+    private http: HttpClient,
+    public stateService: ClassifierStateService
+  ) {}
   // File handling
   onDragOver(event: DragEvent): void {
     event.preventDefault();
@@ -112,7 +150,7 @@ export class SubmitComponent implements OnInit, OnDestroy {
   }
 
   toggleSidebar(): void {
-    this.sidebarOpen.update(v => !v);
+    this.stateService.sidebarOpen.update(v => !v);
   }
 
   onFileChange(event: Event): void {
@@ -141,50 +179,23 @@ export class SubmitComponent implements OnInit, OnDestroy {
       next: (res) => {
         this.result.set(res.classifier_response);
         this.state.set('success');
-        this.sidebarOpen.set(false);
+        this.stateService.sidebarOpen.set(false);
       },
       error: (err: HttpErrorResponse) => {
         this.state.set('error');
-        this.errorMessage.set(err.error?.detail ?? 'Server error — check classifier logs.');
+        this.errorMessage.set(
+          err.error?.detail ?? 'Server error - check classifier logs.');
       },
     });
   }
 
 
   ngOnInit(): void {
-    this.pollStatus();
-    this.statusPoll = interval(8000).subscribe(() => this.pollStatus());
+    this.stateService.pollStatus();
+    this.statusPoll = interval(
+      8000).subscribe(() => this.stateService.pollStatus());
   }
 
-  private pollStatus(): void {
-    this.http.get<{ state: ServerStatus }>(this.STATUS_URL).subscribe({
-      next: (res) => {
-        this.serverStatus.set(res.state);
-      },
-      error: () => {
-        this.serverStatus.set('unknown');
-      },
-    });
-  }
-
-  serverIndicatorLabel(): string {
-    switch (this.serverStatus()) {
-      case 'starting': return 'Server starting';
-      case 'busy':     return 'Server busy';
-      case 'ready':    return 'Server ready';
-      case 'error':    return 'Server error';
-      default:         return 'Server offline';
-    }
-  }
-
-  submissionIndicatorLabel(): string {
-    switch (this.state()) {
-      case 'loading': return 'Processing';
-      case 'success': return 'Complete';
-      case 'error':   return 'Submission failed';
-      default:        return 'Idle';
-    }
-  }
 
 
   // Add signal
@@ -215,13 +226,15 @@ export class SubmitComponent implements OnInit, OnDestroy {
 
     this.state.set('idle');
     this.selectedFile.set(null);
+    this.activeMapType.set('attention');
+    this.selectedAttentionClass.set(null);
     this.result.set(null);
     this.errorMessage.set(null);
     this.selectedView.set('PA');
     if (this.fileInput?.nativeElement) {
       this.fileInput.nativeElement.value = '';
     }
-     this.sidebarOpen.set(true);  
+     this.stateService.sidebarOpen.set(true);  
   }
 
   // Revoke on destroy too
@@ -250,6 +263,5 @@ export class SubmitComponent implements OnInit, OnDestroy {
     return Math.round(t * 100) + '%';
   }
 
-  attentionMap = computed(() => this.result()?.attention_map ?? null);
-  gradCam      = computed(() => this.result()?.grad_cam      ?? null);  
+  //attentionMap = computed(() => this.result()?.attention_map ?? null);
 }

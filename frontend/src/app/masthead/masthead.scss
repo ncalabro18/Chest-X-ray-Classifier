@@ -1,0 +1,235 @@
+
+
+// Masthead
+.masthead {
+  height: 72px;
+  min-height: 72px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding-bottom: 0 1rem;
+  border-bottom: 1px solid var(--c-border);
+  min-width: 0;
+
+
+  .mastheadleft {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+
+    flex: 1 1 auto;
+    min-width: 0;
+  }
+  
+  .mastheadicon {
+    width: 32px;
+    height: 32px;
+    color: var(--c-accent);
+    flex-shrink: 0;
+  }
+
+  .mastheadtitle-group {
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+    min-width: 0;
+  }
+
+  .mastheadtitle {
+    font-family: var(--f-serif);
+    font-size: 1.02rem;
+    font-weight: 300;
+    line-height: 1.1;
+    letter-spacing: 0.01em;
+    margin: 0;
+    color: var(--c-text);
+    white-space: nowrap;
+  }
+
+  .mastheadsubtitle {
+    font-size: 0.64rem;
+    line-height: 1.15;
+    letter-spacing: 0.07em;
+    text-transform: uppercase;
+    color: var(--c-text-dim);
+    font-weight: 400;
+    white-space: nowrap;
+  }
+
+
+  .mastheadright {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 0.75rem;
+    flex: 0 0 auto;
+    flex-wrap: nowrap;
+    flex-shrink: 0;
+    white-space: nowrap;
+  }
+  .mastheadabout {
+    font-size: 0.75rem;
+    color: var(--c-text-dim);
+    text-decoration: none;
+    font-weight: 400;
+    transition: color 0.12s;
+    white-space: nowrap;
+
+    &:hover {
+      color: var(--c-accent);
+    }
+  }
+
+  .mastheadindicator {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    font-size: 0.64rem;
+    line-height: 1;
+    letter-spacing: 0.07em;
+    text-transform: uppercase;
+    color: var(--c-text-dim);
+    font-weight: 400;
+    white-space: nowrap;
+  }
+
+  .mastheadindicator-dot {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: var(--c-border);
+    flex-shrink: 0;
+    transition: background 0.3s, transform 0.3s;
+  }
+
+  .mastheadindicator--offline {
+    color: var(--c-flag);
+
+    .mastheadindicator-dot {
+      background: var(--c-flag);
+    }
+  }
+
+  .mastheadindicator--busy {
+    color: #92681a;
+
+    .mastheadindicator-dot {
+      background: #c8891f;
+    }
+  }
+
+  .mastheadindicator--starting {
+    color: var(--c-text-dim);
+    animation: pulse-text 1.5s ease-in-out infinite;
+
+    .mastheadindicator-dot {
+      background: var(--c-text-dim);
+      animation: pulse-dot 1.5s ease-in-out infinite;
+    }
+  }
+
+  .mastheadindicator--active {
+    color: var(--c-accent);
+
+    .mastheadindicator-dot {
+      background: var(--c-accent);
+      animation: pulse-dot 1.2s ease-in-out infinite;
+    }
+  }
+
+  .mastheadindicator--success {
+    color: var(--c-normal);
+
+    .mastheadindicator-dot {
+      background: var(--c-normal);
+    }
+  }
+
+  .mastheadindicator--error {
+    color: var(--c-flag);
+
+    .mastheadindicator-dot {
+      background: var(--c-flag);
+    }
+  }
+}
+
+
+// Toggle button
+.masthead-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+
+  width: 28px;
+  height: 28px;
+
+  padding: 0;
+  margin-right: 8px;
+
+  border: 1px solid var(--c-border);
+  border-radius: 6px;
+  background: var(--c-surface);
+
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.masthead-toggle .icon {
+  width: 16px;
+  height: 16px;
+  display: block;
+}
+
+.col--results {
+  min-width: 0;                         // prevents grid blowout
+  padding: 0 0 32px 16px;
+  transition: padding 0.3s ease;
+
+  .layout--sidebar-open & {
+    padding-left: 24px;
+  }
+}
+
+
+.masthead-back {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+
+  font-size: 0.8rem;
+  font-weight: 400;
+  letter-spacing: 0.01em;
+
+  color: var(--c-text-dim);
+  text-decoration: none;
+
+  padding: 4px 6px;
+  border-radius: 6px;
+
+  transition: color 0.12s ease, background 0.12s ease;
+
+  white-space: nowrap;
+
+  svg {
+    width: 14px;
+    height: 14px;
+    flex-shrink: 0;
+    stroke: currentColor;
+  }
+
+  &:hover {
+    color: var(--c-accent);
+    background: rgba(0, 0, 0, 0.03);
+  }
+
+  &:active {
+    transform: translateY(1px);
+  }
+
+  &:focus-visible {
+    outline: 2px solid var(--c-accent);
+    outline-offset: 2px;
+  }
+}

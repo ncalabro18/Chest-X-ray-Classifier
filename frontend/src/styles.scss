@@ -1,4 +1,4 @@
-/* You can add global styles to this file, and also import other style files */
+/* Global reset */
 
 html,
 body {
@@ -9,4 +9,68 @@ body {
   min-height: 100%;
 
   background: #0b1120;
+
+  font-family: 'Source Sans 3', 'Helvetica Neue', sans-serif;
+  font-weight: 300;
+
+  box-sizing: border-box;
+  -webkit-font-smoothing: antialiased;
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: inherit;
+}
+
+
+/* Design tokens ONLY */
+:root {
+  --c-bg: #f0f2f5;
+  --c-surface: #ffffff;
+  --c-surface-raised: #fafbfc;
+  --c-border: #dde1e7;
+  --c-border-soft: #eaedf1;
+
+  --c-text: #1c2128;
+  --c-text-mid: #4a5260;
+  --c-text-dim: #8892a0;
+
+  --c-accent: #1a56a0;
+  --c-accent-tint: #ebf1fa;
+  --c-accent-mid: #2563b5;
+
+  --c-flag: #c0272d;
+  --c-flag-tint: #fdf2f2;
+  --c-flag-border: #f0c5c6;
+
+  --c-normal: #1a6e3c;
+  --c-normal-tint: #f0faf4;
+  --c-normal-border: #b8dfc8;
+
+  --f-serif: 'Spectral', Georgia, 'Times New Roman', serif;
+  --f-sans: 'Source Sans 3', 'Helvetica Neue', sans-serif;
+
+  --radius-sm: 3px;
+  --radius-md: 5px;
+  --radius-lg: 8px;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+
+  width: 100%;
+  min-height: 100%;
+
+  box-sizing: border-box;
+
+  background: var(--c-bg);
+  color: var(--c-text);
+
+  font-family: var(--f-sans);
+  font-weight: 300;
+
+  -webkit-font-smoothing: antialiased;
 }

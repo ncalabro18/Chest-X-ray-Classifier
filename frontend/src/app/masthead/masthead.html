@@ -1,0 +1,93 @@
+
+ 
+ 
+ <header class="masthead">
+
+  <!-- LEFT -->
+  <div class="mastheadleft">
+    <button
+      *ngIf="currentUrl === '/'"
+      type="button"
+      class="masthead-toggle"
+      (click)="state.toggleSidebar()"
+      [attr.aria-expanded]="state.sidebarOpen()"
+    >
+      <img *ngIf="state.sidebarOpen()" src="close.svg" class="icon" />
+      <img *ngIf="!state.sidebarOpen()" src="upload.svg" class="icon" />
+    </button>
+
+    <svg width="40" height="40" viewBox="110 55 450 410" xmlns="http://www.w3.org/2000/svg">
+      <style>
+        .lung { fill: #c8dff0; stroke: #4a7fa8; stroke-width: 1.5; }
+        .airway { fill: none; stroke: #2c5f82; stroke-width: 3; stroke-linecap: round; }
+        .airway-sm { fill: none; stroke: #3a7099; stroke-width: 1.8; stroke-linecap: round; }
+        .fissure { fill: none; stroke: #4a7fa8; stroke-width: 1; stroke-dasharray: 4 3; opacity: 0.6; }
+      </style>
+      <path class="lung" d="M 220 148 C 195 148 158 162 140 190 C 118 222 112 258 114 295 C 116 332 122 368 136 394 C 150 420 172 438 196 444 C 216 450 238 446 254 434 C 270 422 278 404 280 382 C 284 354 282 320 278 288 C 274 256 268 222 260 196 C 252 170 240 152 220 148 Z"/>
+      <path class="fissure" d="M 148 272 C 175 266 210 264 278 268"/>
+      <path class="fissure" d="M 136 336 C 168 316 210 300 278 296"/>
+      <path class="lung" d="M 460 148 C 482 148 516 162 534 192 C 554 224 560 260 558 296 C 556 332 550 368 536 394 C 522 420 502 438 478 444 C 458 450 438 446 424 434 C 412 424 405 410 402 392 C 398 372 402 350 406 332 C 398 326 390 316 388 300 C 386 280 392 260 400 240 C 408 216 418 190 432 170 C 442 154 452 148 460 148 Z"/>
+      <path class="fissure" d="M 402 320 C 428 298 452 282 556 296"/>
+      <path class="airway" d="M 340 60 L 340 160"/>
+      <line class="airway-sm" x1="326" y1="80"  x2="354" y2="80"  stroke-width="1.2"/>
+      <line class="airway-sm" x1="326" y1="96"  x2="354" y2="96"  stroke-width="1.2"/>
+      <line class="airway-sm" x1="326" y1="112" x2="354" y2="112" stroke-width="1.2"/>
+      <line class="airway-sm" x1="326" y1="128" x2="354" y2="128" stroke-width="1.2"/>
+      <line class="airway-sm" x1="326" y1="144" x2="354" y2="144" stroke-width="1.2"/>
+      <path class="airway" d="M 340 160 C 340 170 300 175 270 182"/>
+      <path class="airway" d="M 340 160 C 340 170 378 175 408 182"/>
+      <path class="airway-sm" d="M 270 182 C 255 188 238 195 224 204"/>
+      <path class="airway-sm" d="M 265 195 C 252 205 242 218 236 232"/>
+      <path class="airway-sm" d="M 258 210 C 246 228 238 250 234 268"/>
+      <path class="airway-sm" d="M 408 182 C 422 190 438 200 448 212"/>
+      <path class="airway-sm" d="M 415 196 C 428 212 436 230 438 248"/>
+      <path class="airway-sm" d="M 224 204 C 212 216 200 230 192 248" stroke-width="1.2"/>
+      <path class="airway-sm" d="M 236 232 C 224 246 216 262 212 278" stroke-width="1.2"/>
+      <path class="airway-sm" d="M 234 268 C 226 286 220 308 218 328" stroke-width="1.2"/>
+      <path class="airway-sm" d="M 192 248 C 182 268 174 292 172 318" stroke-width="1.2"/>
+      <path class="airway-sm" d="M 172 318 C 166 342 162 368 164 390" stroke-width="1.1"/>
+      <path class="airway-sm" d="M 218 328 C 214 352 212 376 216 398" stroke-width="1.1"/>
+      <path class="airway-sm" d="M 448 212 C 460 228 468 248 470 268" stroke-width="1.2"/>
+      <path class="airway-sm" d="M 438 248 C 444 268 446 290 444 312" stroke-width="1.2"/>
+      <path class="airway-sm" d="M 470 268 C 476 292 478 318 474 344" stroke-width="1.2"/>
+      <path class="airway-sm" d="M 444 312 C 448 338 448 364 444 388" stroke-width="1.1"/>
+      <path class="airway-sm" d="M 474 344 C 478 368 476 394 468 416" stroke-width="1.1"/>
+    </svg>
+    <div class="mastheadtitle-group">
+      <h1 class="mastheadtitle">Chest X-ray Analysis</h1>
+      <span class="mastheadsubtitle">
+        Multi-label pathology screening · SwinV2
+      </span>
+    </div>
+  </div>
+
+  <!-- RIGHT (ALWAYS ONE CONTAINER) -->
+  <div class="mastheadright">
+
+    <ng-container *ngIf="currentUrl === '/'">
+      <a class="mastheadabout" routerLink="/about">About model</a>
+
+      <span class="mastheadindicator">
+        <span class="mastheadindicator-dot"></span>
+        {{ state.serverIndicatorLabel() }}
+      </span>
+
+      <span class="mastheadindicator">
+        <span class="mastheadindicator-dot"></span>
+        {{ state.submissionIndicatorLabel() }}
+      </span>
+    </ng-container>
+
+    <ng-container *ngIf="currentUrl !== '/'">
+      <a class="masthead-back" routerLink="/">
+        <svg viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+          <path d="M10 12L6 8l4-4" stroke="currentColor" stroke-width="1.25"
+              stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+        Analyse
+      </a>
+    </ng-container>
+
+  </div>
+
+</header>
