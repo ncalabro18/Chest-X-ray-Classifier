@@ -28,15 +28,36 @@ class CheckpointFile:
             "no_improve": no_improve,
         }, path)
 
-    def save(self, model_state: dict, thresholds, temperature_scaler):
+    def save(self, classifier, thresholds, temperature_scaler):
         torch.save({
-            "model": model_state,
-            "thresholds": thresholds,
+            "model":       classifier.ema_model.module.state_dict(),
+            "thresholds":  thresholds.tolist(),
             "temperature": temperature_scaler.temps.detach().cpu().tolist(),
         }, self.best_path)
-        print(f"Temperature saved: {temperature_scaler.temps}")
+
+    def save_final(self, model_state: dict, thresholds, temperature_scaler):
+        # Overwrite best checkpoint with fitted temperature after training completes.
+        existing = self.load_best() if os.path.exists(self.best_path) else {}
+        existing.update({
+            "model": model_state,
+            "thresholds": thresholds.tolist(),
+            "temperature": temperature_scaler.temps.detach().cpu().tolist(),
+        })
+        torch.save(existing, self.best_path)
+        print(
+            "  Final checkpoint saved with temperature: ",
+            temperature_scaler.temps.mean().item()
+        )
 
     def load_best(self) -> dict:
         if not os.path.exists(self.best_path):
-            raise FileNotFoundError(f"No checkpoint at {self.best_path}. Training may have failed early.")
-        return torch.load(self.best_path, map_location=self.device, weights_only=False)
+            raise FileNotFoundError(
+                "No checkpoint at ",
+                self.best_path,
+                ". Training may have failed early."
+            )
+        return torch.load(
+            self.best_path,
+            map_location=self.device,
+            weights_only=False
+        )

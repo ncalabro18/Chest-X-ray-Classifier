@@ -49,7 +49,7 @@ from torch.amp import autocast
 from tqdm import tqdm
 
 from classes import (
-    ALL_CLASSES, NUM_CLASSES, 
+    ALL_CLASSES, NO_FINDING_COL, NUM_CLASSES, 
 )
 
 from dataset import (
@@ -60,7 +60,7 @@ from dataset import (
 )
 
 from architecture import (
-    IMAGE_SIZE, MultiClassifier, SwinWithView, AsymmetricLoss,
+    CONSISTENCY_LOSS_WEIGHT, HEAD_WARMUP_START_FACTOR, IMAGE_SIZE, MultiClassifier, SwinWithView, AsymmetricLoss,
     Scheduler, PerClassTemperatureScaler,
     fit_temperature, 
     print_architecture_parameters, tta_predict,
@@ -213,7 +213,11 @@ def main():
         classifier,
         max_epochs=NUM_EPOCHS
     )
-    
+
+    # Init LR    
+    for group in classifier.optimizer.param_groups:
+        if group.get("layer_idx", -1) == -1:
+            group["lr"] = group["base_lr"] * HEAD_WARMUP_START_FACTOR
     
     # Training Loop
     def run_epoch(loader, train=True, eval_model=None):
@@ -239,13 +243,6 @@ def main():
                 n_samples += imgs.size(0)
 
 
-                # if train and epoch > 10:
-                #     with torch.no_grad():
-                #         soft = torch.sigmoid(ema_model.module(imgs, views)).detach()
-                #     override_mask = (soft > 0.85) & (lbls < 0.1)
-                #     lbls = lbls.clone()
-                #     lbls[override_mask] = soft[override_mask] * 0.6
-
                 with autocast(device_type="cuda", dtype=torch.bfloat16, enabled=True):
                     if train:
                         logits = active_model(imgs, views)
@@ -253,26 +250,28 @@ def main():
                     else:
                         probs = tta_predict(active_model, imgs, views)
                         logits = torch.logit(probs.clamp(1e-6, 1 - 1e-6))
-                    
+
                     loss = classifier.criterion(logits, lbls)
 
+                    if train:
+                        nf_prob = probs[:, NO_FINDING_COL]
+                        disease_mask = torch.ones(NUM_CLASSES, device=probs.device, dtype=torch.bool)
+                        disease_mask[NO_FINDING_COL] = False
+                        disease_probs = probs[:, disease_mask]
+                        consistency_loss = (nf_prob.unsqueeze(1) * disease_probs).mean()
+                        loss = loss + CONSISTENCY_LOSS_WEIGHT * consistency_loss
+
+                # Backward pass outside autocast
                 if train:
-                    gate_vals = torch.sigmoid(classifier.raw_model.stage_gates)
-                    gate_entropy = -(gate_vals * torch.log(gate_vals + 1e-6) + 
-                                    (1 - gate_vals) * torch.log(1 - gate_vals +
-                                         1e-6)).mean()
-                    loss = loss - 0.02 * gate_entropy  # pulls gates away from 0 and 1
                     loss.backward()
                     torch.nn.utils.clip_grad_norm_(classifier.model.parameters(), max_norm=1.0)
                     classifier.optimizer.step()
                     classifier.optimizer.zero_grad()
                     classifier.ema_model.update_parameters(classifier.raw_model)
 
-                
                 total_loss += loss.item() * imgs.size(0)
                 all_logits.append(probs.float().cpu().detach())
                 all_labels.append(lbls.detach().cpu())
-
 
         avg_loss = total_loss / n_samples
         probs  = torch.cat(all_logits).numpy()
@@ -335,6 +334,9 @@ def main():
 
 
     for epoch in range(start_epoch, NUM_EPOCHS + 1):
+
+        scheduler.step(epoch)
+
 
         ### Train ###
         tr_loss, tr_auc, tr_f1, _, _, _, _ = run_epoch(
@@ -409,11 +411,13 @@ def main():
                 device
             )
 
-
+            temperature_scaler = classifier.fit_and_attach_temperature(
+                value_loader, NUM_CLASSES
+            )
             ckpt_file.save(
                 classifier=classifier,
                 thresholds=best_thresh,
-                temperature_scaler=classifier.temperature_scaler
+                temperature_scaler=temperature_scaler
             )
 
             print("  -> saved new best model")
@@ -431,8 +435,6 @@ def main():
             f"train_loss={tr_loss:.4f}  train_auc={tr_auc:.4f}  "
             f"val_loss={val_loss:.4f}  val_auc={val_auc:.4f}")
 
-
-        scheduler.step(epoch)
 
         classifier.raw_model.print_stage_gates()
 
@@ -473,8 +475,6 @@ def main():
     else:
         ckpt = classifier.load_best_checkpoint(MODEL_OUTPUT_FILE)
         print("view_scale:", classifier.view_scale())
-        temperature_scaler = classifier.fit_and_attach_temperature(value_loader, NUM_CLASSES)
-        ckpt_file.save_final(ckpt["model"], best_thresh, classifier.temperature_scaler)
         print(f"Temperature saved: {temperature_scaler.temps.mean().item():.4f}")
 
     print("End time: ", datetime.datetime.now())

@@ -57,7 +57,7 @@ VIEW_POSITION_SCALE = 0.2
 
 # high decay prevents noise from destabilizing training
 # may underfit if too high
-EMA_DECAY = 0.999
+EMA_DECAY = 0.9992
 
 
 ### Asymmetric Loss ###
@@ -68,18 +68,19 @@ ASYMMETRIC_CLIP      = 0.1
 
 ASYMMETRIC_LABEL_SMOOTH = 0.05
 
+CONSISTENCY_LOSS_WEIGHT = 0.02
 
 ### Scheduler Parameters ###
 
 # column 1: epoch to unfreeze at
 # column 2: layer index to unfreeze
 UNFREEZE_SCHEDULE = {
-    3:  3,   # was 5 - bring backbone in before head overfits
-    8:  2,
-    13: 1,
-    18: 0,
+    2:  3,   # was 5 - bring backbone in before head overfits
+    4:  2,
+    7: 1,
+    10: 0,
 }
-UNFREEZE_WARMUP_EPOCHS = 4
+UNFREEZE_WARMUP_EPOCHS = 3
 
 # Initial warmup factor for newly unfrozen layers,
 # relative to their base_lr
@@ -88,11 +89,8 @@ UNFREEZE_WARMUP_FACTOR = 0.1
 # Highly dependant on schedule timing
 UNFREEZE_BUMP_FACTOR = 1.2
 
-
-# Warmup backbone; previously trained
-WARMUP_EPOCHS = 3
-WARMUP_START_FACTOR = 0.3
-WARMUP_END_FACTOR = 1.0
+HEAD_WARMUP_EPOCHS      = 3
+HEAD_WARMUP_START_FACTOR = 0.3
 
 # SWA - starts after final unfreeze warmup completes (epoch 20 + 4 warmup)
 SWA_START_EPOCH = 25
@@ -388,8 +386,8 @@ class MultiClassifier:
         self._unwrapped_model().load_state_dict(ckpt["model"])
         self.ema_model.module.load_state_dict(ckpt["model"])
 
-        # load temperature scaler if present
-        if "temperature" in ckpt:
+
+        if ckpt.get("temperature") is not None:
             temps = torch.tensor(ckpt["temperature"], device=self.device)
             scaler = PerClassTemperatureScaler(len(temps)).to(self.device)
             scaler.temps = torch.nn.Parameter(temps)
@@ -426,30 +424,24 @@ class PerClassTemperatureScaler(nn.Module):
     def forward(self, logits):
         return logits / self.temps.clamp(min=0.1)
     
-
 class Scheduler:
     def __init__(self, classifier, max_epochs):
         self.max_epochs = max_epochs
         self.optimizer  = classifier.optimizer
         self.in_swa     = False
         self.raw_model = classifier.raw_model
-        self.swa_model = SWAModel(self.raw_model) 
-
+        self.swa_model = SWAModel(self.raw_model)
 
         self.layer_to_idx = {
             layer: i
             for i, layer in enumerate(classifier.raw_model.backbone.layers)
         }
-        self.warmup_scheduler = torch.optim.lr_scheduler.LinearLR(
-            self.optimizer,
-            start_factor=WARMUP_START_FACTOR,
-            end_factor=WARMUP_END_FACTOR,
-            total_iters=WARMUP_EPOCHS,
-        )
+        # REMOVED: self.warmup_scheduler = LinearLR(...)
         self.unfreeze_scheduler = UnfreezeScheduler(
             layer_to_idx=self.layer_to_idx,
             optimizer=self.optimizer,
         )
+
 
     def step(self, epoch):
         self.unfreeze_scheduler.step(epoch)
@@ -460,23 +452,30 @@ class Scheduler:
                 for group in self.optimizer.param_groups:
                     group["lr"] = SWA_LR
                 self.in_swa = True
-            # LR stays flat during SWA - skip cosine and unfreeze scaling
 
-        elif epoch <= WARMUP_EPOCHS:
-            self.warmup_scheduler.step()
+        elif epoch <= HEAD_WARMUP_EPOCHS:
+            # Warm up head only — backbone is frozen so its LR doesn't matter yet
+            factor = HEAD_WARMUP_START_FACTOR + (
+                1.0 - HEAD_WARMUP_START_FACTOR
+            ) * (epoch / HEAD_WARMUP_EPOCHS)
+            for group in self.optimizer.param_groups:
+                if group.get("layer_idx", -1) == -1:
+                    group["lr"] = group["base_lr"] * factor
+
         else:
             for group in self.optimizer.param_groups:
                 group["lr"] = init_group_cosine(
-                    group, epoch, self.max_epochs, ETA_MIN_RATIO, WARMUP_EPOCHS
+                    group, epoch, self.max_epochs, ETA_MIN_RATIO, warmup_epochs=0
                 )
             self.unfreeze_scheduler.apply_scales()
-            
+
+
+    def min_stop_epoch(self):
+        return max(SWA_START_EPOCH, max(UNFREEZE_SCHEDULE))
 
     def is_swa(self):
         return self.in_swa
 
-    def min_stop_epoch(self):
-        return max(self.unfreeze_scheduler.schedule) + UNFREEZE_WARMUP_EPOCHS
 
 class UnfreezeScheduler:
     def __init__(self, layer_to_idx, optimizer):
@@ -662,13 +661,12 @@ def tta_predict(model, imgs, views):
     return probs
 
 
-
-def init_group_cosine(group, epoch, total_epochs, eta_min_ratio, warmup_epochs):
-    ue = warmup_epochs if group.get("layer_idx", -1) < 0 else group.get("unfreeze_epoch", 1)
+def init_group_cosine(group, epoch, total_epochs, eta_min_ratio, warmup_epochs=0):
+    ue = max(warmup_epochs, group.get("unfreeze_epoch", 1)) if group.get("layer_idx", -1) >= 0 else 0
     effective = max(epoch - ue, 0)
     T_max = max(total_epochs - ue, 1)
     cos = 0.5 * (1 + math.cos(math.pi * effective / T_max))
-    eta_min = group["base_lr"] * eta_min_ratio # per-group floor
+    eta_min = group["base_lr"] * eta_min_ratio
     return eta_min + (group["base_lr"] - eta_min) * cos
 
 
@@ -752,9 +750,8 @@ def print_architecture_parameters():
     print("  UNFREEZE_WARMUP_FACTOR", UNFREEZE_WARMUP_FACTOR)
     print("  UNFREEZE_BUMP_FACTOR", UNFREEZE_BUMP_FACTOR)
     print("  UNFREEZE_SCHEDULE", UNFREEZE_SCHEDULE)
-    print("  WARMUP_EPOCHS", WARMUP_EPOCHS)
-    print("  WARMUP_START_FACTOR", WARMUP_START_FACTOR)
-    print("  WARMUP_END_FACTOR", WARMUP_END_FACTOR)
+    print("  HEAD_WARMUP_EPOCHS", HEAD_WARMUP_EPOCHS)
+    print("  HEAD_WARMUP_START_FACTOR", HEAD_WARMUP_START_FACTOR)
     print("  SWA_START_EPOCH", SWA_START_EPOCH)
     print("  SWA_LR", SWA_LR)
     print("  ETA_MIN_RATIO", ETA_MIN_RATIO)

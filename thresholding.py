@@ -66,8 +66,8 @@ def fit_thresholds(ema_model, thresh_loader, device):
 
     for c in range(NUM_CLASSES):
         col = (thresh_labels[:, c] >= 0.5).astype(int)
-        if col.sum() < MIN_VAL_POSITIVES:
-            continue
+        # if col.sum() < MIN_VAL_POSITIVES:
+        #     continue
 
         fpr, tpr, roc_thresholds = roc_curve(col, thresh_probs[:, c])
         j_idx = np.argmax(tpr - fpr)
