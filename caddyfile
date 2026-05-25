@@ -4,6 +4,9 @@ ncalabro.net {
 
     reverse_proxy nginx:4000
 
+    rate_limit {remote.ip} 10r/m
+
+
     header {
 
         Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
