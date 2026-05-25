@@ -6,5 +6,6 @@ python-multipart
 pillow
 numpy
 torch
+slowapi
 prometheus_client
 prometheus_fastapi_instrumentator
