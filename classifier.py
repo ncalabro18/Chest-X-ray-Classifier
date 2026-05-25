@@ -12,6 +12,7 @@ import torch
 import uvicorn
 import secrets
 import os
+import logging
 
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
@@ -22,13 +23,16 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from classes import ALL_CLASSES, NUM_CLASSES
 from dataset import PerImageStandardize, make_value_tf
 from architecture import MultiClassifier, IMAGE_SIZE, tta_predict
-from visualization_util import generate_attention_map, generate_grad_cam
+from visualization_util import generate_attention_map, generate_gradient_saliency
 
 MODEL_OUTPUT_FILE = "swin_cxr8_best.pth"
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 _val_tf = make_value_tf(IMAGE_SIZE)
 
 API_KEY = os.environ["API_KEY"]
+
+MAX_IMAGE_BYTES = 10 * 1024 * 1024
+
 
 class APIKeyMiddleware(BaseHTTPMiddleware):
 
@@ -80,12 +84,20 @@ async def classify_image(
     image: UploadFile = File(...),
     view: str = Form(default="PA"),
 ):
+    
+    print("Classifying a ", view, " image.")
+    print("  filename = ", image.filename)
+    print("  size = ", image.size)
+    print("  content_type = ", image.content_type)
     view = view.strip().upper()
     if view not in ("PA", "AP"):
         raise HTTPException(status_code=400, detail="view must be 'PA' or 'AP'")
     view_id = 0 if view == "PA" else 1
 
-    raw = await image.read()
+    raw = await image.read(MAX_IMAGE_BYTES + 1)
+    if len(raw) > MAX_IMAGE_BYTES:
+        raise HTTPException(status_code=413, detail="Image too large")
+    
     try:
         pil_img = Image.open(io.BytesIO(raw))
         pil_img.load()
@@ -121,32 +133,54 @@ async def classify_image(
         for c, cls_name in enumerate(ALL_CLASSES)
     }
 
-    view_tensor = torch.tensor([view_id], dtype=torch.long, device=DEVICE)
+    # Single forward pass caches last_attention for ALL classes
+    with torch.no_grad():
+        inner_model = model.module if hasattr(model, "module") else model
+        inner_model(tensor, view_tensor)
 
-    input_tensor = tensor.clone().detach().requires_grad_(True)
+    attention_maps: dict[str, str] = {}
+    saliency_maps:  dict[str, str] = {}
 
-    attention_map = generate_attention_map(
-        model=model,
-        input_tensor=input_tensor,
-        view_tensor=view_tensor,
-        original_image=pil_img
-    )
+    MAX_VIZ_CLASSES = 3
+    positive_classes = sorted(
+        [(c, cls_name) for c, cls_name in enumerate(ALL_CLASSES)
+         if predictions[cls_name]["positive"]],
+        key=lambda x: predictions[x[1]]["probability"],
+        reverse=True
+    )[:MAX_VIZ_CLASSES]
 
-    grad_cam = generate_grad_cam(
-        model=model,
-        input_tensor=input_tensor,
-        view_tensor=view_tensor,
-        original_image=pil_img
-    )
+    for c, cls_name in positive_classes:
+        try:
+            # Pass skip_forward=True so it uses the cached last_attention
+            attention_maps[cls_name] = generate_attention_map(
+                model=model,
+                input_tensor=tensor,
+                view_tensor=view_tensor,
+                original_image=pil_img,
+                class_idx=c,
+                skip_forward=True,     # ADD this flag
+            )
+        except Exception as exc:
+            logging.warning("Attention map failed for %s: %s", cls_name, exc)
+
+        try:
+            saliency_maps[cls_name] = generate_gradient_saliency(
+                model=model,
+                input_tensor=tensor,
+                view_tensor=view_tensor,
+                original_image=pil_img,
+                class_idx=c,
+            )
+        except Exception as exc:
+            logging.warning("Saliency map failed for %s: %s", cls_name, exc)
+
 
     return {
         "predictions": predictions,
         "view": view,
-        "attention_map": attention_map,
-        "grad_cam": grad_cam,
+        "attention_maps": attention_maps,
+        "saliency_maps":  saliency_maps,
     }
-    # return {"predictions": predictions, "view": view}
-
 
 
 # Helpers

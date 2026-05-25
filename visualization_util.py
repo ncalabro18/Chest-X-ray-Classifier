@@ -1,3 +1,6 @@
+"""
+© 2026 Nicholas J. Calabro. All rights reserved.
+""" 
 import base64
 import io
 
@@ -8,11 +11,14 @@ import cv2
 from PIL import Image
 
 
-def _to_data_url(pil_img: Image.Image, fmt: str = "PNG") -> str:
+def _to_data_url(pil_img: Image.Image, fmt: str = "JPEG", quality: int = 85) -> str:
     buf = io.BytesIO()
-    pil_img.save(buf, format=fmt)
+    if fmt == "JPEG":
+        pil_img = pil_img.convert("RGB")   # JPEG doesn't support alpha
+    pil_img.save(buf, format=fmt, quality=quality, optimize=True)
     encoded = base64.b64encode(buf.getvalue()).decode("utf-8")
-    return f"data:image/png;base64,{encoded}"
+    mime = "image/jpeg" if fmt == "JPEG" else "image/png"
+    return f"data:{mime};base64,{encoded}"
 
 
 def _overlay_heatmap_on_image(
@@ -67,110 +73,83 @@ def _find_last_conv_layer(model: torch.nn.Module):
             last = m
     return last
 
-
-def generate_grad_cam(
-    model: torch.nn.Module,
-    input_tensor: torch.Tensor,
-    view_tensor: torch.Tensor,
-    original_image: Image.Image,
-    class_idx: int = None,
-) -> str:
-    """
-    Returns a base64 PNG data URL of the Grad-CAM heatmap overlaid on
-    `original_image` at full resolution.
-    """
-    inner = _unwrap(model)
-    inner.eval()
-
-    target_layer = _find_last_conv_layer(inner)
-    if target_layer is None:
-        raise RuntimeError("No Conv2d layer found for Grad-CAM.")
-
-    activations: dict = {}
-    gradients: dict = {}
-
-    def fwd_hook(_, __, output):
-        activations["value"] = output.detach()
-
-    def bwd_hook(_, grad_input, grad_output):
-        gradients["value"] = grad_output[0].detach()
-
-    h1 = target_layer.register_forward_hook(fwd_hook)
-    h2 = target_layer.register_full_backward_hook(bwd_hook)
-
-    try:
-        with torch.enable_grad():
-            logits = inner(input_tensor, view_tensor)
-            if logits.ndim == 1:
-                logits = logits.unsqueeze(0)
-            if class_idx is None:
-                class_idx = int(torch.argmax(logits[0]).item())
-            score = logits[0, class_idx]
-            inner.zero_grad(set_to_none=True)
-            score.backward(retain_graph=False)
-
-            acts  = activations["value"]
-            grads = gradients["value"]
-            weights = grads.mean(dim=(2, 3), keepdim=True)
-            cam = F.relu((weights * acts).sum(dim=1, keepdim=True))
-            cam = cam[0, 0].detach().cpu().numpy().astype(np.float32)
-            cam = cam - cam.min()
-            cam = cam / (cam.max() + 1e-8)
-
-            overlaid = _overlay_heatmap_on_image(original_image, cam, alpha=0.45)
-            return _to_data_url(overlaid)
-    finally:
-        h1.remove()
-        h2.remove()
-
+EARLY_STAGE_TOKENS = 49
 
 def generate_attention_map(
-    model: torch.nn.Module,
-    input_tensor: torch.Tensor,
-    view_tensor: torch.Tensor,
-    original_image: Image.Image,
+    model, input_tensor, view_tensor, original_image,
+    class_idx=None, skip_forward=False,
 ) -> str:
-    """
-    Returns a base64 PNG data URL of the cross-attention heatmap overlaid on
-    `original_image` at full resolution.
-    """
     inner = _unwrap(model)
     inner.eval()
 
-    # --- path 1: explicit forward_with_attention ---
-    if hasattr(inner, "forward_with_attention"):
+    if not skip_forward:
         with torch.no_grad():
-            out = inner.forward_with_attention(input_tensor, view_tensor)
-        if isinstance(out, tuple) and len(out) >= 2:
-            attn = out[1]
-            if torch.is_tensor(attn):
-                attn = attn.detach().float().cpu()
-                if attn.ndim == 4:
-                    attn = attn.mean(dim=1)[0]
-                elif attn.ndim == 3:
-                    attn = attn[0].mean(dim=0)
-                attn = attn - attn.min()
-                attn = attn / (attn.max() + 1e-8)
-                hm = _tokens_to_heatmap(attn.numpy())
-                return _to_data_url(_overlay_heatmap_on_image(original_image, hm))
+            inner(input_tensor, view_tensor)
 
-    # --- path 2: last_attention cached by SwinWithView.forward ---
-    with torch.no_grad():
-        inner(input_tensor, view_tensor)
+    if not hasattr(inner, "last_attention"):
+        raise RuntimeError("Attention map not available from this model.")
 
-    if hasattr(inner, "last_attention"):
-        attn = inner.last_attention  # (B, num_classes, N_total)
-        if torch.is_tensor(attn):
-            attn = attn.detach().float().cpu()
-            if attn.ndim == 3:
-                attn = attn[0].mean(dim=0)   # → (N_total,)
-            elif attn.ndim == 2:
-                attn = attn.mean(dim=0)
-            elif attn.ndim == 4:
-                attn = attn.mean(dim=1)[0].mean(dim=0)
-            attn = attn - attn.min()
-            attn = attn / (attn.max() + 1e-8)
-            hm = _tokens_to_heatmap(attn.numpy())
-            return _to_data_url(_overlay_heatmap_on_image(original_image, hm))
+    attn = inner.last_attention.detach().float().cpu()  # (B, num_classes, N_total)
 
-    raise RuntimeError("Attention map not available from this model.")
+    if class_idx is not None:
+        attn_1d = attn[0, class_idx, :]
+    else:
+        attn_1d = attn[0].mean(dim=0)
+
+    n_early = len(inner.stage_projs)                      # 3
+    n_early_tokens = n_early * EARLY_STAGE_TOKENS         # 147
+    n_final_tokens = attn_1d.shape[0] - n_early_tokens    # 144 (12×12)
+    final_side = int(n_final_tokens ** 0.5)               # 12
+
+    # Split early and final token blocks
+    early_tokens = attn_1d[:n_early_tokens].reshape(n_early, EARLY_STAGE_TOKENS)
+    final_tokens = attn_1d[n_early_tokens:].reshape(final_side, final_side).numpy()
+
+    # Weight early stages by gate activations
+    gate_acts = (1.0 + torch.tanh(inner.stage_gates)).detach().cpu()  # (n_early,)
+    early_weighted = (early_tokens * gate_acts.unsqueeze(1)).sum(dim=0)  # (49,)
+    early_map = early_weighted.numpy().reshape(7, 7)
+
+    # Upsample both to a common size and combine
+    early_up = cv2.resize(early_map, (final_side, final_side), interpolation=cv2.INTER_LANCZOS4)
+    combined = 0.4 * early_up + 0.6 * final_tokens        # weight final stage higher
+
+    combined -= combined.min()
+    combined /= (combined.max() + 1e-8)
+    combined = combined.astype(np.float32)
+
+    return _to_data_url(_overlay_heatmap_on_image(original_image, combined, alpha=0.35))
+
+def generate_gradient_saliency(
+    model, input_tensor, view_tensor, original_image, class_idx,
+    n_smooth=8, noise_level=0.10,
+) -> str:
+    inner = _unwrap(model)
+    inner.eval()
+
+    base = input_tensor.clone().float()          # (1, 3, H, W)
+    noise_std = noise_level * (base.max() - base.min()).item()
+
+    # Stack n_smooth noisy copies into a single batch - one forward+backward pass
+    noisy = base.repeat(n_smooth, 1, 1, 1)       # (n_smooth, 3, H, W)
+    noisy = noisy + torch.randn_like(noisy) * noise_std
+    noisy.requires_grad_(True)
+
+    view_batch = view_tensor.repeat(n_smooth)    # (n_smooth,)
+
+    logits = inner(noisy, view_batch)            # (n_smooth, num_classes)
+    score  = logits[:, class_idx].sum()
+    inner.zero_grad()
+    score.backward()
+
+    # Average gradient magnitude across batch
+    grad = noisy.grad.data.abs()                 # (n_smooth, 3, H, W)
+    saliency = grad.max(dim=1).values.mean(dim=0).cpu().numpy().astype(np.float32)
+    saliency -= saliency.min()
+    saliency /= (saliency.max() + 1e-8)
+
+    return _to_data_url(_overlay_heatmap_on_image(
+        original_image,
+        saliency,
+        alpha=0.55
+    ))
