@@ -1,8 +1,9 @@
 """
+© 2026 Nicholas J. Calabro. All rights reserved.
+
 Accepts a POST request at /submit and forwards it to CLASSIFIER_URL.
 
-Uses an asyncio.Semaphore to limit the number of
-simultaneous in-flight requests.
+Uses an asyncio.Semaphore to .
 
 If all slots are occupied, returns HTTP 429.
 """
@@ -12,12 +13,20 @@ import logging
 import os
 import time
 import uuid
-
+import asyncio
 import json
 import httpx
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+
+
+from fastapi import (
+    FastAPI, Request, File, Form, HTTPException, UploadFile
+)
 from PIL import Image
 from io import BytesIO
+from starlette.middleware.base import BaseHTTPMiddleware
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
+from slowapi.util import get_remote_address
 from prometheus_fastapi_instrumentator import Instrumentator
 from prometheus_client import Counter, Histogram, Gauge
 
@@ -28,10 +37,19 @@ MAX_BYTES = int(os.getenv("MAX_BYTES", str(10 * 1024 * 1024)))
 MAX_WIDTH = 1080
 MAX_HEIGHT = 1080
 MAX_CONCURRENT_REQUESTS = 5
+MAX_ASPECT_RATIO = 4.0
+MAX_IMAGE_PIXELS = 20_000_000
 
 CLASSIFIER_BASE_URL = "http://classifier:9000"
-CLASSIFIER_IMAGE_URL = os.getenv("CLASSIFIER_URL", "http://classifier:9000/image")
 CLASSIFIER_API_KEY = os.getenv("CLASSIFIER_API_KEY")
+
+class TimeoutMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request, call_next):
+        try:
+            return await asyncio.wait_for(call_next(request), timeout=45)
+        except asyncio.TimeoutError:
+            raise HTTPException(status_code=408, detail="Request timeout")
+
 
 if CLASSIFIER_API_KEY is None:
     print("ERROR, NO CLASSIFIER API KEY FOUND;")
@@ -43,7 +61,7 @@ submissions_total = Counter(
     'cxr_web_submissions_total',
     'Total image submissions by outcome',
     ['view', 'outcome'],   # outcome: success | rejected_mime | rejected_size
-                           #          rejected_dims | invalid_image | busy | error
+                           #    rejected_dims | invalid_image | busy | error
 )
 
 end_to_end_latency = Histogram(
@@ -79,23 +97,42 @@ image_size_bytes = Histogram(
 # Initialise the free-slot gauge at startup
 semaphore_slots_free.set(MAX_CONCURRENT_REQUESTS)
 
+limiter = Limiter(key_func=get_remote_address)
+
+
 # App
-app = FastAPI()
-Image.MAX_IMAGE_PIXELS = 20_000_000
+app = FastAPI(
+    docs_url=None,
+    redoc_url=None,
+    openapi_url=None,
+)
+app.add_middleware(TimeoutMiddleware)
+Image.MAX_IMAGE_PIXELS = MAX_IMAGE_PIXELS
 semaphore = asyncio.Semaphore(MAX_CONCURRENT_REQUESTS)
 
 Instrumentator().instrument(app).expose(app)
 
+app.state.limiter = limiter
+app.add_exception_handler(
+    RateLimitExceeded,
+    _rate_limit_exceeded_handler
+)
+
 
 async def forward_to_classifier(view: str, img_data: bytes) -> tuple[int, str]:
     filename = f"{uuid.uuid4()}.png"
-    timeout = httpx.Timeout(30.0, read=30.0)
+    timeout = httpx.Timeout(
+        connect=10.0,
+        read=30.0,
+        write=30.0,
+        pool=10.0,
+    )
     limits = httpx.Limits(max_connections=10, max_keepalive_connections=5)
 
     async with httpx.AsyncClient(timeout=timeout, limits=limits) as client:
         t0 = time.perf_counter()
         r = await client.post(
-            CLASSIFIER_IMAGE_URL,
+            CLASSIFIER_BASE_URL + "/image",
             data={"view": view},
             files={"image": (filename, img_data, "image/png")},
             headers={
@@ -110,35 +147,51 @@ async def forward_to_classifier(view: str, img_data: bytes) -> tuple[int, str]:
 
 
 @app.post("/submit")
+@limiter.limit("6/minute")
 async def submit_image(
+    request: Request,
     view: str = Form(...),
     file: UploadFile = File(...),
 ):
     t_start = time.perf_counter()
-    logger.info(
-        "REQUEST RECEIVED: view=%s, filename=%s, content_type=%s",
-        view, file.filename, file.content_type,
+    logger.info( # don't log filename; security concern
+        "REQUEST RECEIVED: view=%s, content_type=%s",
+        view, file.content_type,
     )
 
-    # Validate view
+    # view check
     if view not in {"AP", "PA"}:
         submissions_total.labels(view=view, outcome="rejected_view").inc()
         raise HTTPException(status_code=400, detail="View must be AP or PA")
 
-    # Semaphore — non-blocking check with short timeout
+
+    
+    # content type check
+    if not file.content_type.startswith("image/"):
+        submissions_total.labels(view=view, outcome="rejected_mime").inc()
+        raise HTTPException(
+            status_code=415,
+            detail="Uploaded file must be an image"
+        )
+    # png check
+    if file.content_type != "image/png":
+        submissions_total.labels(view=view, outcome="rejected_mime").inc()
+        raise HTTPException(status_code=415, detail="Only PNG images are allowed")
+
+    # Semaphore - non-blocking check with short timeout
+    acquired = False
     try:
         await asyncio.wait_for(semaphore.acquire(), timeout=0.05)
+        acquired = True
     except asyncio.TimeoutError:
         submissions_total.labels(view=view, outcome="busy").inc()
-        raise HTTPException(status_code=429, detail="Server busy; try again later")
+        raise HTTPException(
+            status_code=429,
+            detail="Server busy; try again later"
+        )
 
-    semaphore_slots_free.set(MAX_CONCURRENT_REQUESTS - (MAX_CONCURRENT_REQUESTS - semaphore._value))
-
+    semaphore_slots_free.set(semaphore._value)
     try:
-        # MIME check
-        if file.content_type != "image/png":
-            submissions_total.labels(view=view, outcome="rejected_mime").inc()
-            raise HTTPException(status_code=400, detail="Only PNG images are allowed")
 
         # Size check
         data = await file.read(MAX_BYTES + 1)
@@ -147,6 +200,8 @@ async def submit_image(
             raise HTTPException(status_code=413, detail="File too large")
 
         image_size_bytes.observe(len(data))
+
+        
 
         # Decode and validate
         try:
@@ -163,16 +218,34 @@ async def submit_image(
 
         if img.width > MAX_WIDTH or img.height > MAX_HEIGHT:
             submissions_total.labels(view=view, outcome="rejected_dims").inc()
-            raise HTTPException(status_code=400, detail="Image dimensions too large")
+            raise HTTPException(
+                status_code=400,
+                detail="Image dimensions too large"
+            )
 
         # Sanitise by re-encoding as greyscale PNG
         img = img.convert("L")
         clean_buf = BytesIO()
-        img.save(clean_buf, format="PNG")
+        img.save(clean_buf, format="PNG", optimize=False)
         clean_data = clean_buf.getvalue()
+
+        # aspect ratio check
+        ratio = max(img.width / img.height, img.height / img.width)
+        if ratio > MAX_ASPECT_RATIO:
+            raise HTTPException(
+                status_code=400,
+                detail="Invalid image dimensions"
+            )
+
 
         # Forward to classifier
         status, resp_text = await forward_to_classifier(view, clean_data)
+
+        if status != 200:
+            raise HTTPException(
+                status_code=502,
+                detail="Classifier unavailable"
+            )
 
         outcome = "success" if status == 200 else "error"
         submissions_total.labels(view=view, outcome=outcome).inc()
@@ -197,10 +270,13 @@ async def submit_image(
         raise HTTPException(status_code=500, detail="Internal server error")
 
     finally:
-        semaphore.release()
-        semaphore_slots_free.set(
-            MAX_CONCURRENT_REQUESTS - (MAX_CONCURRENT_REQUESTS - semaphore._value)
-        )
+        if acquired:
+            semaphore.release()
+            semaphore_slots_free.set(
+                MAX_CONCURRENT_REQUESTS - (
+                    MAX_CONCURRENT_REQUESTS - semaphore._value
+                )
+            )
 
 
 @app.get("/status")
@@ -208,7 +284,7 @@ async def status():
     slots_free = semaphore._value
 
     try:
-        async with httpx.AsyncClient(timeout=2.0) as client:
+        async with httpx.AsyncClient(timeout=4.0) as client:
             r = await client.get(
                 f"{CLASSIFIER_BASE_URL}/ready",
                 headers={
@@ -228,4 +304,4 @@ async def status():
     else:
         state = "ready"
 
-    return {"state": state, "slots_free": slots_free}   
+    return {"state": state, "slots_free": slots_free}
