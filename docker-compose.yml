@@ -1,17 +1,16 @@
 # docker-compose.yml
 
 # classifier runs the ML model, simple http server
-# keep cut off from open web ports
+# keep it cut off from open web ports
 
 # web runs the exposed API
 
 # frontend runs the Angular nginx server
 # prometheus collects useful metrics
-# grafana displays them
+# grafana displays them in a browser
 
 # frontend and web are to be served with public access
-# the rest (in particular Classifier) should remain accessable
-# to 127.0.0.1 only for security purposes
+# the rest (in particular Classifier) should be private
 
 services:
 
@@ -84,6 +83,13 @@ services:
       - backend    # reaches classifier
       - dmz        # reachable by frontend
 
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8000/status || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
 
   frontend:
     build:
@@ -133,7 +139,7 @@ services:
     ports:
       - "127.0.0.1:9090:9090"
     networks:
-      - dmz
+      - monitoring
 
   grafana:
     image: grafana/grafana:latest
@@ -142,17 +148,21 @@ services:
     volumes:
       - grafana_data:/var/lib/grafana
     environment:
-      GF_SECURITY_ADMIN_PASSWORD: "admin_pw"
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD}
     depends_on:
       - prometheus
     networks:
-      - dmz
+      - monitoring
 
 
 networks:
   # Exposed network: browser -> frontend, frontend -> web
   dmz:
     driver: bridge
+
+  monitoring:
+    driver: bridge
+    internal: true
 
   # Internal network: web -> classifier only
   backend:
