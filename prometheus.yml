@@ -1,10 +1,14 @@
 scrape_configs:
   - job_name: web
     static_configs:
-      - targets: ['web:8000']
+      - targets: ['web:9091']
     metrics_path: /metrics
 
   - job_name: classifier
     static_configs:
-      - targets: ['classifier:9000']
+      - targets: ['classifier:9091']
     metrics_path: /metrics
+
+  - job_name: 'nginx'
+    static_configs:
+      - targets: ['nginx-exporter:9113']

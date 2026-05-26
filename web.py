@@ -29,6 +29,8 @@ from slowapi.errors import RateLimitExceeded
 from slowapi.util import get_remote_address
 from prometheus_fastapi_instrumentator import Instrumentator
 from prometheus_client import Counter, Histogram, Gauge
+from prometheus_client import start_http_server
+from contextlib import asynccontextmanager
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -100,8 +102,14 @@ semaphore_slots_free.set(MAX_CONCURRENT_REQUESTS)
 limiter = Limiter(key_func=get_remote_address)
 
 
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    start_http_server(port=9091)
+    yield
+
 # App
 app = FastAPI(
+    lifespan=lifespan,
     docs_url=None,
     redoc_url=None,
     openapi_url=None,
@@ -110,7 +118,7 @@ app.add_middleware(TimeoutMiddleware)
 Image.MAX_IMAGE_PIXELS = MAX_IMAGE_PIXELS
 semaphore = asyncio.Semaphore(MAX_CONCURRENT_REQUESTS)
 
-Instrumentator().instrument(app).expose(app)
+Instrumentator().instrument(app)
 
 app.state.limiter = limiter
 app.add_exception_handler(

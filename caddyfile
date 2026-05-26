@@ -1,27 +1,43 @@
-ncalabro.net {
+classifier.ncalabro.net {
+	tls /etc/caddy/certs/origin.pem /etc/caddy/certs/origin.key
 
-    encode gzip zstd
+	encode gzip zstd
 
-    reverse_proxy nginx:4000
+	handle /metrics {
+		respond 403
+	}
 
-    rate_limit {remote.ip} 10r/m
+	handle /grafana/* {
+		header X-Frame-Options "SAMEORIGIN"
+		reverse_proxy grafana:3000
+	}
 
+	handle {
+		reverse_proxy frontend:4000
+	}
 
-    header {
-
-        Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
-
-        X-Content-Type-Options "nosniff"
-
-        X-Frame-Options "DENY"
-
-        Referrer-Policy "strict-origin-when-cross-origin"
-    }
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		Referrer-Policy "strict-origin-when-cross-origin"
+	}
 }
 
 localhost {
+	tls internal
 
-    encode gzip zstd
+	encode gzip zstd
 
-    reverse_proxy frontend:4000
+	handle /metrics {
+		respond 403
+	}
+
+	handle /grafana/* {
+		reverse_proxy grafana:3000
+	}
+
+	handle {
+		reverse_proxy frontend:4000
+	}
 }

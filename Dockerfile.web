@@ -19,6 +19,8 @@ RUN mkdir -p /tmp/uploads && chown -R appuser:appuser /tmp/uploads
 USER appuser
 
 EXPOSE 8000
+EXPOSE 9091
+
 
 CMD ["uvicorn","web:app", "--host", "0.0.0.0", \
             "--port", "8000", "--proxy-headers"]
