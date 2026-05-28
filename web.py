@@ -15,8 +15,12 @@ import time
 import uuid
 import asyncio
 import json
+from fastapi.responses import JSONResponse
 import httpx
 
+
+from fastapi import FastAPI, Request
+from starlette.middleware.base import BaseHTTPMiddleware
 
 from fastapi import (
     FastAPI, Request, File, Form, HTTPException, UploadFile
@@ -45,12 +49,29 @@ MAX_IMAGE_PIXELS = 20_000_000
 CLASSIFIER_BASE_URL = "http://classifier:9000"
 CLASSIFIER_API_KEY = os.getenv("CLASSIFIER_API_KEY")
 
-class TimeoutMiddleware(BaseHTTPMiddleware):
-    async def dispatch(self, request, call_next):
+
+
+class TimeoutMiddleware:
+    def __init__(self, app, timeout: float = 45.0):
+        self.app = app
+        self.timeout = timeout
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
         try:
-            return await asyncio.wait_for(call_next(request), timeout=45)
+            await asyncio.wait_for(
+                self.app(scope, receive, send),
+                timeout=self.timeout
+            )
         except asyncio.TimeoutError:
-            raise HTTPException(status_code=408, detail="Request timeout")
+            response = JSONResponse(
+                {"detail": "Request timeout"}, status_code=408
+            )
+            await response(scope, receive, send)
+
+
 
 
 if CLASSIFIER_API_KEY is None:
@@ -96,8 +117,6 @@ image_size_bytes = Histogram(
              2_000_000, 5_000_000, 10_000_000],
 )
 
-# Initialise the free-slot gauge at startup
-semaphore_slots_free.set(MAX_CONCURRENT_REQUESTS)
 
 limiter = Limiter(key_func=get_remote_address)
 
@@ -114,7 +133,7 @@ app = FastAPI(
     redoc_url=None,
     openapi_url=None,
 )
-app.add_middleware(TimeoutMiddleware)
+app.add_middleware(TimeoutMiddleware, timeout=45.0)
 Image.MAX_IMAGE_PIXELS = MAX_IMAGE_PIXELS
 semaphore = asyncio.Semaphore(MAX_CONCURRENT_REQUESTS)
 
@@ -154,6 +173,7 @@ async def forward_to_classifier(view: str, img_data: bytes) -> tuple[int, str]:
     return r.status_code, r.text
 
 
+
 @app.post("/submit")
 @limiter.limit("6/minute")
 async def submit_image(
@@ -163,16 +183,16 @@ async def submit_image(
 ):
     t_start = time.perf_counter()
     logger.info( # don't log filename; security concern
-        "REQUEST RECEIVED: view=%s, content_type=%s",
-        view, file.content_type,
+        "submit/ POST RECEIVED",
     )
+    if request.headers.get("X-Tunnel-Secret") != os.getenv("INTERNAL_SECRET"):
+        raise HTTPException(status_code=403, detail="Invalid header secret")
 
+        
     # view check
     if view not in {"AP", "PA"}:
         submissions_total.labels(view=view, outcome="rejected_view").inc()
         raise HTTPException(status_code=400, detail="View must be AP or PA")
-
-
     
     # content type check
     if not file.content_type.startswith("image/"):
@@ -191,6 +211,7 @@ async def submit_image(
     try:
         await asyncio.wait_for(semaphore.acquire(), timeout=0.05)
         acquired = True
+        semaphore_slots_free.set(semaphore._value)
     except asyncio.TimeoutError:
         submissions_total.labels(view=view, outcome="busy").inc()
         raise HTTPException(
@@ -198,7 +219,6 @@ async def submit_image(
             detail="Server busy; try again later"
         )
 
-    semaphore_slots_free.set(semaphore._value)
     try:
 
         # Size check
@@ -280,16 +300,14 @@ async def submit_image(
     finally:
         if acquired:
             semaphore.release()
-            semaphore_slots_free.set(
-                MAX_CONCURRENT_REQUESTS - (
-                    MAX_CONCURRENT_REQUESTS - semaphore._value
-                )
-            )
+            semaphore_slots_free.set(semaphore._value)
 
 
 @app.get("/status")
-async def status():
-    slots_free = semaphore._value
+@limiter.limit("14/minute")
+async def status(
+    request: Request,
+):
 
     try:
         async with httpx.AsyncClient(timeout=4.0) as client:
@@ -307,9 +325,9 @@ async def status():
 
     if not model_ready:
         state = "starting"
-    elif slots_free == 0:
+    elif semaphore._value == 0:
         state = "busy"
     else:
         state = "ready"
 
-    return {"state": state, "slots_free": slots_free}
+    return {"state": state, "slots_free": semaphore._value}
