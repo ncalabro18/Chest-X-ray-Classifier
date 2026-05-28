@@ -484,17 +484,25 @@ $grid-cols: 160px 1fr 70px 70px 70px 80px;
 }
 
 .findings-section--flagged {
+  overflow: visible;
   position: relative;
   padding-left: 0px;
 }
 
+
 .findings-rail {
   position: absolute;
-  left: 0;
+  left: -12px; // move outside container
   top: 0;
   bottom: 0;
   width: 4px;
-  background: linear-gradient(to bottom, #c0272d, rgba(192,39,45,0.6));
+
+  background: linear-gradient(
+    to bottom,
+    #c0272d,
+    rgba(192,39,45,0.6)
+  );
+
   border-radius: 4px;
 }
 
@@ -514,13 +522,17 @@ $grid-cols: 160px 1fr 70px 70px 70px 80px;
   padding: 0 5px;
 }
 
+
+
 .findings-sectionheader {
-  display: grid;
-  align-items: center;                // was: place-items: center (was also centering horizontally)
+  display: flex;
+  //display: grid;
+  align-items: center;
   justify-items: center;
+  place-items: center;
   grid-template-columns: $grid-cols;
-  padding: 5px 1.25rem;              // match .finding row padding exactly
-  gap: 10px;                         // match .finding row gap exactly
+  padding: 5px 1.25rem;
+  gap: 10px;           
   font-size: 0.6875rem;
   letter-spacing: 0.08em;
   text-transform: uppercase;
@@ -535,48 +547,34 @@ $grid-cols: 160px 1fr 70px 70px 70px 80px;
   }
 }
 
-// .findings-sectionheader {
-//   display: grid;
-//   place-items: center;
-//   //justify-content: space-between;
-//   grid-template-columns: $grid-cols;
-//   //padding: 0.5rem 1.25rem 0.25rem;
-//   font-size: 0.6875rem;
-//   letter-spacing: 0.08em;
-//   text-transform: uppercase;
-//   color: var(--c-text-dim);
-//   font-weight: 400;
-//   border-top: 1px solid var(--c-border-soft);
-// }
-
 .findings-sectionheader--flagged {
-
   color: var(--c-flag);
-  background: var(--c-flag-tint);
-  border-top-color: var(--c-flag-border);
+  background: transparent;   // remove red bar
+  border-top-color: var(--c-border-soft);
+  position: relative;
+  overflow: visible;
 }
 
 .findings-sectionheader:first-child {
   border-top: none;
 }
 
+
+
 .findings-sectioncount {
+  display: inline-block;
+  min-width: 2ch;
+  padding: 0 6px;
+  text-align: center;
   justify-self: center;
-  width: 25%;
-  position: relative;
   font-size: 0.6875rem;
   background: var(--c-bg);
   border: 1px solid var(--c-border);
   border-radius: 10px;
-  //padding: 0 6px;
   color: var(--c-text-dim);
 }
 
-.findings-sectionheader--flagged {
-  color: var(--c-flag);
-  background: transparent;   // remove red bar
-  border-top-color: var(--c-border-soft);
-}
+
 
 
 // Column headers
