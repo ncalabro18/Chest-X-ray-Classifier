@@ -126,7 +126,7 @@ async def ping(request: Request):
     return {"message": "hello"}
 
 @app.get("/ready")
-@limiter.limit("10/minute")
+@limiter.limit("20/minute")
 async def ready(request: Request):
     return {"status": "ready"}
 
