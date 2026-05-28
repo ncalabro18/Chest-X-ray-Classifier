@@ -81,6 +81,18 @@
     }
   }
 
+  .mastheadabout--download {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+
+    svg {
+      width: 13px;
+      height: 13px;
+      flex-shrink: 0;
+    }
+  }
+
   .mastheadindicator {
     display: inline-flex;
     align-items: center;

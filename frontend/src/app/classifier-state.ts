@@ -21,9 +21,9 @@ export class ClassifierStateService {
 
   private readonly STATUS_URL = '/status';
 
-  serverStatus = signal<ServerStatus>('unknown');
+  public serverStatus = signal<ServerStatus>('unknown');
 
-  submitState = signal<SubmitState>('idle');
+  public submitState = signal<SubmitState>('idle');
 
   sidebarOpen = signal(true);
 

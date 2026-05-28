@@ -464,6 +464,11 @@ $grid-cols: 160px 1fr 70px 70px 70px 80px;
   to { opacity: 1; transform: none; }
 }
 
+.findings-colheader--name {
+  justify-self: center;
+  text-align: center;
+}
+
 .findings-colheader--prob,
 .findings-colheader--thr,
 .findingprob,
@@ -479,7 +484,8 @@ $grid-cols: 160px 1fr 70px 70px 70px 80px;
 }
 
 .findings-section--flagged {
-  padding-left: 10px;
+  position: relative;
+  padding-left: 0px;
 }
 
 .findings-rail {
@@ -510,17 +516,38 @@ $grid-cols: 160px 1fr 70px 70px 70px 80px;
 
 .findings-sectionheader {
   display: grid;
-  place-items: center;
-  //justify-content: space-between;
+  align-items: center;                // was: place-items: center (was also centering horizontally)
+  justify-items: center;
   grid-template-columns: $grid-cols;
-  //padding: 0.5rem 1.25rem 0.25rem;
+  padding: 5px 1.25rem;              // match .finding row padding exactly
+  gap: 10px;                         // match .finding row gap exactly
   font-size: 0.6875rem;
   letter-spacing: 0.08em;
   text-transform: uppercase;
   color: var(--c-text-dim);
   font-weight: 400;
   border-top: 1px solid var(--c-border-soft);
+
+  // span the label text across all remaining columns
+  span:last-child {
+    grid-column: 2 / -1;
+    justify-self: start;
+  }
 }
+
+// .findings-sectionheader {
+//   display: grid;
+//   place-items: center;
+//   //justify-content: space-between;
+//   grid-template-columns: $grid-cols;
+//   //padding: 0.5rem 1.25rem 0.25rem;
+//   font-size: 0.6875rem;
+//   letter-spacing: 0.08em;
+//   text-transform: uppercase;
+//   color: var(--c-text-dim);
+//   font-weight: 400;
+//   border-top: 1px solid var(--c-border-soft);
+// }
 
 .findings-sectionheader--flagged {
 
@@ -534,11 +561,14 @@ $grid-cols: 160px 1fr 70px 70px 70px 80px;
 }
 
 .findings-sectioncount {
+  justify-self: center;
+  width: 25%;
+  position: relative;
   font-size: 0.6875rem;
   background: var(--c-bg);
   border: 1px solid var(--c-border);
   border-radius: 10px;
-  padding: 0 6px;
+  //padding: 0 6px;
   color: var(--c-text-dim);
 }
 
@@ -561,13 +591,13 @@ $grid-cols: 160px 1fr 70px 70px 70px 80px;
 .findings-colheaders {
   display: grid;
   grid-template-columns: $grid-cols;
-  padding: 0 12px 4px;
-  gap: 8px;
+  padding: 0 1.25rem 4px;
+  gap: 10px; 
   align-items: center;
   text-align: center;
   place-items: center;
-
 }
+
 
 .findings-colheader {
   font-size: 0.7rem;
@@ -615,12 +645,12 @@ $grid-cols: 160px 1fr 70px 70px 70px 80px;
 }
 
 .findingname-col {
-  display: grid;
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  justify-content: center;
   gap: 7px;
   min-width: 0;
-  align-items: center;
-  text-align: center;
-  place-items: center;
 }
 
 .findingflag-dot {

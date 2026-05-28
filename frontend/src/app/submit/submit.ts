@@ -14,9 +14,9 @@ import { ClassifierStateService } from '../classifier-state';
 
 // Types
 
-export type ServerStatus = 'starting' | 'ready' | 'busy' | 'unknown' | 'error';
+// export type ServerStatus = 'starting' | 'ready' | 'busy' | 'unknown' | 'error';
 export type ViewPosition = 'PA' | 'AP';
-export type SubmitState = 'idle' | 'loading' | 'success' | 'error';
+// export type SubmitState = 'idle' | 'loading' | 'success' | 'error';
 
 export interface Prediction {
   probability: number;
@@ -39,8 +39,6 @@ export interface SubmitResponse {
 }
 
 
-
-
 // Component
 
 @Component({
@@ -54,7 +52,6 @@ export class SubmitComponent implements OnInit, OnDestroy {
   @ViewChild('fileInput') fileInput!: ElementRef<HTMLInputElement>;
 
   private readonly SUBMIT_URL = '/submit';
-  private readonly STATUS_URL = '/status';
 
   private statusPoll?: Subscription;
 
@@ -62,13 +59,11 @@ export class SubmitComponent implements OnInit, OnDestroy {
 
 
   // State
-  state        = signal<SubmitState>('idle');
   errorMessage = signal<string | null>(null);
   result       = signal<ClassifierPayload | null>(null);
   dragOver     = signal(false);
   selectedFile = signal<File | null>(null);
   selectedView = signal<ViewPosition>('PA');
-  serverStatus = signal<ServerStatus>('unknown');
 
 
   attention_maps = computed(() => this.result()?.attention_maps ?? {});
@@ -165,24 +160,25 @@ export class SubmitComponent implements OnInit, OnDestroy {
   // Submit
   submit(): void {
     const file = this.selectedFile();
-    if (!file || this.state() === 'loading') return;
+    if (!file || this.stateService.submitState() === 'loading') return;
 
     const form = new FormData();
     form.append('file', file, file.name);
     form.append('view', this.selectedView());
 
-    this.state.set('loading');
     this.errorMessage.set(null);
     this.result.set(null);
 
+    this.stateService.submitState.set("loading")
     this.http.post<SubmitResponse>(this.SUBMIT_URL, form).subscribe({
       next: (res) => {
         this.result.set(res.classifier_response);
-        this.state.set('success');
         this.stateService.sidebarOpen.set(false);
+        this.stateService.submitState.set("success")
       },
       error: (err: HttpErrorResponse) => {
-        this.state.set('error');
+        this.stateService.submitState.set("error")
+
         this.errorMessage.set(
           err.error?.detail ?? 'Server error - check classifier logs.');
       },
@@ -210,7 +206,7 @@ export class SubmitComponent implements OnInit, OnDestroy {
     this.imagePreviewUrl.set(URL.createObjectURL(file));
     this.result.set(null);
     this.errorMessage.set(null);
-    this.state.set('idle');
+    this.stateService.submitState.set('idle');
   }
 
   comparisonOverlay = signal<'attention' | 'gradcam' | null>(null);
@@ -224,7 +220,7 @@ export class SubmitComponent implements OnInit, OnDestroy {
     if (prev) URL.revokeObjectURL(prev);
     this.imagePreviewUrl.set(null);
 
-    this.state.set('idle');
+    this.stateService.submitState.set('idle');
     this.selectedFile.set(null);
     this.activeMapType.set('attention');
     this.selectedAttentionClass.set(null);

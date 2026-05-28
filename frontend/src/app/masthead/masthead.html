@@ -67,6 +67,15 @@
     <ng-container *ngIf="currentUrl === '/'">
       <a class="mastheadabout" routerLink="/about">About model</a>
 
+      <a
+        class="mastheadabout"
+        href="sample_cxr.png"
+        download="sample-cxr.png"
+        aria-label="Download sample chest X-ray"
+      >
+        Sample image
+      </a>
+
       <span class="mastheadindicator">
         <span class="mastheadindicator-dot"></span>
         {{ state.serverIndicatorLabel() }}
