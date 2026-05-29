@@ -45,9 +45,54 @@ $grid-cols: 160px 1fr 70px 70px 70px 80px;
 
 // Sidebar
 
+.sidebar-mobileheader {
+  display: none;
+  justify-content: flex-end;
+  padding-bottom: 8px;
+
+  @media (max-width: 700px) {
+    display: flex;
+  }
+}
+
+.sidebar-closebtn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  border: 1px solid var(--c-border);
+  border-radius: var(--radius-md);
+  background: var(--c-surface);
+  cursor: pointer;
+  color: var(--c-text-mid);
+  transition: background 0.12s;
+
+  &:hover {
+    background: var(--c-bg);
+  }
+
+  svg {
+    width: 16px;
+    height: 16px;
+  }
+}
+
 .sidebar {
   overflow: hidden;                     // hides content during collapse
   min-width: 0;
+}
+
+.sidebar-backdrop {
+  display: none;
+
+  @media (max-width: 700px) {
+    display: block;
+    position: fixed;
+    inset: 0;
+    z-index: 199; // just under sidebar's 200
+    background: rgba(0, 0, 0, 0.35);
+  }
 }
 
 .sidebar-inner {

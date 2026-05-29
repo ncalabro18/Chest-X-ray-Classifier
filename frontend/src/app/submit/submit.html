@@ -5,9 +5,30 @@
 
   <div class="layout" [class.layout--sidebar-open]="stateService.sidebarOpen()">
 
+    @if (stateService.sidebarOpen()) {
+      <div 
+        class="sidebar-backdrop"
+        (click)="stateService.sidebarOpen.set(false)"
+        aria-hidden="true"
+      ></div>
+    }
+
     <!-- Sidebar -->
     <aside class="sidebar" [class.sidebar--open]="stateService.sidebarOpen()" aria-label="Analysis controls">
       <div class="sidebar-inner">
+
+        <div class="sidebar-mobileheader">
+          <button 
+            class="sidebar-closebtn"
+            type="button"
+            (click)="stateService.sidebarOpen.set(false)"
+            aria-label="Close panel"
+          >
+            <svg viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+              <path d="M5 5l10 10M15 5L5 15" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+            </svg>
+          </button>
+        </div>
 
         <!-- Upload card -->
         <div class="card">
