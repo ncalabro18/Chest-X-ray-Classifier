@@ -1,6 +1,11 @@
-*.pth
-__pycache__/
 Swin-Transformer/
-.env
 .vscode/
+
+__pycache__/
+*.py[cod]
+
+
+# For security, do NOT remove:
+*.pth
+.env
 certs/
