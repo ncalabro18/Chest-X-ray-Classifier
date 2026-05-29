@@ -3,7 +3,7 @@
 classifier.py
 Determines diseases from a POST request
 Responds with per-disease probabilities, thresholds,
-GradCAM, and Attention Map
+Saliency, and Attention Map Images
 """
 import io
 import threading
@@ -14,25 +14,27 @@ import uvicorn
 import secrets
 import os
 import logging
+import asyncio
 
+
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import JSONResponse
 from PIL import Image
 from starlette.middleware.base import BaseHTTPMiddleware
-
-from classes import ALL_CLASSES, NUM_CLASSES
-from dataset import PerImageStandardize, make_value_tf
-from architecture import MultiClassifier, IMAGE_SIZE, tta_predict
-from visualization_util import generate_attention_map, generate_gradient_saliency
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from slowapi.util import get_remote_address
 from prometheus_fastapi_instrumentator import Instrumentator
 from prometheus_client import (Counter, Histogram, start_http_server)
-from contextlib import asynccontextmanager
 
+from classes import ALL_CLASSES, NUM_CLASSES
+from dataset import PerImageStandardize, make_value_tf
+from architecture import MultiClassifier, IMAGE_SIZE, tta_predict
+from visualization_util import generate_attention_map, generate_gradient_saliency
 
+_viz_executor = ThreadPoolExecutor(max_workers=2)
 MODEL_OUTPUT_FILE = "swin_cxr8_best.pth"
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 _val_tf = make_value_tf(IMAGE_SIZE)
@@ -40,6 +42,7 @@ _val_tf = make_value_tf(IMAGE_SIZE)
 API_KEY = os.environ["API_KEY"]
 
 MAX_IMAGE_BYTES = 10 * 1024 * 1024
+MAX_VIZ_CLASSES = 3
 
 
 class APIKeyMiddleware(BaseHTTPMiddleware):
@@ -84,7 +87,7 @@ SALIENCY_MAP_ERROR =  Counter(
     ['view'],
 )
 
-# Startup app
+### Startup app ###
 startup_app = FastAPI()
 startup_app.add_middleware(APIKeyMiddleware)
 
@@ -103,10 +106,12 @@ async def lifespan(app: FastAPI):
     start_http_server(port=9091)
     yield
 
-# Main app
+### Main Classifier Service Webserver ###
+
 limiter = Limiter(key_func=get_remote_address)
 
 app = FastAPI(lifespan=lifespan)
+
 Instrumentator().instrument(app)
 
 app.state.limiter = limiter
@@ -118,17 +123,50 @@ app.add_exception_handler(
 app.add_middleware(APIKeyMiddleware)
 
 
-
-
 @app.get("/ping")
 @limiter.limit("10/minute")
 async def ping(request: Request):
     return {"message": "hello"}
 
+# Only returns loading when using startup server;
+# Web uses a semaphore to limit resource usage across connections,
+# SlowAPI limits it per-ip (limiter)
 @app.get("/ready")
 @limiter.limit("20/minute")
 async def ready(request: Request):
     return {"status": "ready"}
+    
+
+import asyncio
+from concurrent.futures import ThreadPoolExecutor
+
+_viz_executor = ThreadPoolExecutor(max_workers=2)
+
+async def generate_maps_async(model, tensor, view_tensor, pil_img, positive_classes, view):
+    loop = asyncio.get_event_loop()
+    attention_maps, saliency_maps = {}, {}
+
+    for c, cls_name in positive_classes:
+        try:
+            attention_maps[cls_name] = await loop.run_in_executor(
+                _viz_executor,
+                lambda c=c: generate_attention_map(model, tensor, view_tensor, pil_img, c, skip_forward=True)
+            )
+        except Exception as exc:
+            ATTENTION_MAP_ERROR.labels(view=view).inc()
+            logging.warning("Attention map failed for %s: %s", cls_name, exc)
+
+        try:
+            saliency_maps[cls_name] = await loop.run_in_executor(
+                _viz_executor,
+                lambda c=c: generate_gradient_saliency(model, tensor, view_tensor, pil_img, c)
+            )
+        except Exception as exc:
+            SALIENCY_MAP_ERROR.labels(view=view).inc()
+            logging.warning("Saliency map failed for %s: %s", cls_name, exc)
+
+    return attention_maps, saliency_maps
+
 
 @app.post("/image")
 @limiter.limit("6/minute")
@@ -168,7 +206,7 @@ async def classify_image(
     thresholds = state["thresholds"]
 
     try:
-        t0 = time.perf_counter()
+        pre_inference_time = time.perf_counter()
         with torch.no_grad():
             with torch.autocast(device_type=DEVICE.type, dtype=torch.bfloat16,
                                 enabled=DEVICE.type == "cuda"):
@@ -188,20 +226,14 @@ async def classify_image(
             for c, cls_name in enumerate(ALL_CLASSES)
         }
 
-        # Single forward pass caches last_attention for ALL classes
-        with torch.no_grad():
-            inner_model = model.module if hasattr(model, "module") else model
-            inner_model(tensor, view_tensor)
-        INFERENCE_LATENCY.observe(time.perf_counter() - t0)
+        INFERENCE_LATENCY.observe(time.perf_counter() - pre_inference_time)
         INFERENCE_TOTAL.labels(view=view, outcome='success').inc()
     except Exception:
+        INFERENCE_LATENCY.observe(time.perf_counter() - pre_inference_time)
         INFERENCE_TOTAL.labels(view=view, outcome='error').inc()
         raise
 
-    attention_maps: dict[str, str] = {}
-    saliency_maps:  dict[str, str] = {}
 
-    MAX_VIZ_CLASSES = 3
     positive_classes = sorted(
         [(c, cls_name) for c, cls_name in enumerate(ALL_CLASSES)
          if predictions[cls_name]["positive"]],
@@ -209,37 +241,16 @@ async def classify_image(
         reverse=True
     )[:MAX_VIZ_CLASSES]
 
-    t0 = time.perf_counter()
-    for c, cls_name in positive_classes:
-
-        try:
-            # Pass skip_forward=True so it uses the cached last_attention
-            attention_maps[cls_name] = generate_attention_map(
-                model=model,
-                input_tensor=tensor,
-                view_tensor=view_tensor,
-                original_image=pil_img,
-                class_idx=c,
-                skip_forward=True,     # ADD this flag
-            )
-        except Exception as exc:
-            ATTENTION_MAP_ERROR.labels(view=view).inc()
-            logging.warning("Attention map failed for %s: %s", cls_name, exc)
-
-        try:
-            saliency_maps[cls_name] = generate_gradient_saliency(
-                model=model,
-                input_tensor=tensor,
-                view_tensor=view_tensor,
-                original_image=pil_img,
-                class_idx=c,
-            )
-        except Exception as exc:
-            SALIENCY_MAP_ERROR.labels(view=view).inc()
-            logging.warning("Saliency map failed for %s: %s", cls_name, exc)
-
-    INFERENCE_LATENCY.observe(time.perf_counter() - t0)
-    INFERENCE_TOTAL.labels(view=view, outcome='success').inc()
+    # Generate attention and saliency maps and record latency
+    pre_map_gen_time = time.perf_counter()
+    attention_maps, saliency_maps = await generate_maps_async(
+        model=model,
+        tensor=tensor, view_tensor=view_tensor,
+        pil_img=pil_img,
+        positive_classes=positive_classes,
+        view=view
+    )
+    MAP_GENERATION_LATENCY.observe(time.perf_counter() - pre_map_gen_time)
 
     return {
         "predictions": predictions,
