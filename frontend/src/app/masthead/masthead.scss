@@ -2,13 +2,14 @@
 
 // Masthead
 .masthead {
-  height: 72px;
+  height: auto;
   min-height: 72px;
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 1rem;
-  padding-bottom: 0 1rem;
+  // padding-bottom: 0 1rem;
+  padding: 0 1rem;
   border-bottom: 1px solid var(--c-border);
   min-width: 0;
 
@@ -20,6 +21,17 @@
 
     flex: 1 1 auto;
     min-width: 0;
+
+
+    .masthead-logo {
+       @media (max-width: 600px) {
+        display: none;
+      }
+    }
+
+  }
+  .mastheadleft > svg {
+    flex-shrink: 0;
   }
   
   .mastheadicon {
@@ -67,8 +79,13 @@
     flex-wrap: nowrap;
     flex-shrink: 0;
     white-space: nowrap;
+    @media (max-width: 600px) {
+      flex-direction: column;
+      align-items: flex-end;
+      gap: 0.1rem;
+    }
   }
-  .mastheadabout {
+  .mastheadlink {
     font-size: 0.75rem;
     color: var(--c-text-dim);
     text-decoration: none;
@@ -78,6 +95,10 @@
 
     &:hover {
       color: var(--c-accent);
+    }
+    @media (max-width: 400px) {
+      font-size: 0.58rem;
+      gap: 3px;
     }
   }
 
@@ -104,6 +125,11 @@
     color: var(--c-text-dim);
     font-weight: 400;
     white-space: nowrap;
+
+    @media (max-width: 480px) {
+      font-size: 0.58rem;
+      gap: 3px;
+    }
   }
 
   .mastheadindicator-dot {
