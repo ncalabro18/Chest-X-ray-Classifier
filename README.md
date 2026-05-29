@@ -175,6 +175,8 @@ Mean: ```5798.3```
 
 Standard Deviation: ```5429.6```
 
+
+
 ## Authors:
 
 Nicholas Calabro
@@ -193,3 +195,18 @@ Hilary Jaen Rodriguez
 Extended Final Project for a Computer Science Special Topics Elective: _Computing for Health and Medicine_
 
 [Professor Wenjin's Course Page](https://www.cs.uml.edu/~wzhou/comp5300.html)
+
+
+## References
+
+### NIH Chest X-ray Dataset
+Wang, X., Peng, Y., Lu, L., Lu, Z., Bagheri, M., & Summers, R. M. (2017).  
+*ChestX-ray8: Hospital-scale Chest X-ray Database and Benchmarks on Weakly-Supervised Classification and Localization of Common Thorax Diseases.*  
+Proceedings of the IEEE Conference on Computer Vision and Pattern Recognition (CVPR).  
+https://doi.org/10.1109/CVPR.2017.369
+
+### Swin Transformer v2
+Liu, Z., Hu, H., Lin, Y., Yao, Z., Xie, Z., Wei, Y., Ning, J., Cao, Y., Zhang, Z., Dong, L., Wei, F., & Guo, B. (2022).  
+*Swin Transformer V2: Scaling Up Capacity and Resolution.*  
+Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR).  
+https://doi.org/10.1109/CVPR52688.2022.01167
