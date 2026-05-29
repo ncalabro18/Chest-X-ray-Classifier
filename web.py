@@ -1,10 +1,9 @@
 """
 © 2026 Nicholas J. Calabro. All rights reserved.
 
-Accepts a POST request at /submit and forwards it to CLASSIFIER_URL.
+Accepts a POST request at /submit and forwards it to the classifier service.
 
-Uses an asyncio.Semaphore to .
-
+Uses an asyncio.Semaphore to limit concurrent submissions.
 If all slots are occupied, returns HTTP 429.
 """
 
@@ -52,7 +51,7 @@ CLASSIFIER_API_KEY = os.getenv("CLASSIFIER_API_KEY")
 
 
 class TimeoutMiddleware:
-    def __init__(self, app, timeout: float = 45.0):
+    def __init__(self, app, timeout: float = 65.0):
         self.app = app
         self.timeout = timeout
 
@@ -133,7 +132,7 @@ app = FastAPI(
     redoc_url=None,
     openapi_url=None,
 )
-app.add_middleware(TimeoutMiddleware, timeout=45.0)
+app.add_middleware(TimeoutMiddleware, timeout=65.0)
 Image.MAX_IMAGE_PIXELS = MAX_IMAGE_PIXELS
 semaphore = asyncio.Semaphore(MAX_CONCURRENT_REQUESTS)
 
@@ -150,7 +149,7 @@ async def forward_to_classifier(view: str, img_data: bytes) -> tuple[int, str]:
     filename = f"{uuid.uuid4()}.png"
     timeout = httpx.Timeout(
         connect=10.0,
-        read=30.0,
+        read=55.0,
         write=30.0,
         pool=10.0,
     )
@@ -185,6 +184,7 @@ async def submit_image(
     logger.info( # don't log filename; security concern
         "submit/ POST RECEIVED",
     )
+    # secret check set in caddy
     if request.headers.get("X-Tunnel-Secret") != os.getenv("INTERNAL_SECRET"):
         raise HTTPException(status_code=403, detail="Invalid header secret")
 
@@ -201,6 +201,7 @@ async def submit_image(
             status_code=415,
             detail="Uploaded file must be an image"
         )
+    
     # png check
     if file.content_type != "image/png":
         submissions_total.labels(view=view, outcome="rejected_mime").inc()
@@ -230,7 +231,6 @@ async def submit_image(
         image_size_bytes.observe(len(data))
 
         
-
         # Decode and validate
         try:
             img = Image.open(BytesIO(data))
@@ -251,12 +251,6 @@ async def submit_image(
                 detail="Image dimensions too large"
             )
 
-        # Sanitise by re-encoding as greyscale PNG
-        img = img.convert("L")
-        clean_buf = BytesIO()
-        img.save(clean_buf, format="PNG", optimize=False)
-        clean_data = clean_buf.getvalue()
-
         # aspect ratio check
         ratio = max(img.width / img.height, img.height / img.width)
         if ratio > MAX_ASPECT_RATIO:
@@ -264,6 +258,13 @@ async def submit_image(
                 status_code=400,
                 detail="Invalid image dimensions"
             )
+        
+        # Sanitise by re-encoding as greyscale PNG
+        img = img.convert("L")
+        clean_buf = BytesIO()
+        img.save(clean_buf, format="PNG", optimize=False)
+        clean_data = clean_buf.getvalue()
+
 
 
         # Forward to classifier
@@ -278,7 +279,6 @@ async def submit_image(
         outcome = "success" if status == 200 else "error"
         submissions_total.labels(view=view, outcome=outcome).inc()
         end_to_end_latency.observe(time.perf_counter() - t_start)
-
 
         parsed = json.loads(resp_text)
 
