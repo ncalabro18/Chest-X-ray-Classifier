@@ -80,6 +80,7 @@ def init_thresh_dataloader(thresh_ds):
     )
 
 def print_dataloader_parameters():
+    print("Dataloader Parameters:")
     print("  BATCH_SIZE_VAL", BATCH_SIZE_VAL)
     print("  BATCH_SIZE_TRAIN", BATCH_SIZE_TRAIN)
     print("  TRAIN_LOADER_WORKERS", LOADER_WORKERS_TRAIN )
