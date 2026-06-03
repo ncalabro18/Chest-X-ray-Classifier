@@ -41,7 +41,10 @@ import time
 import numpy as np
 
 from checkpoint import CheckpointFile
-from dataloader import init_thresh_dataloader, init_train_dataloader, init_value_dataloader, print_dataloader_parameters
+from dataloader import (
+    init_thresh_dataloader, init_train_dataloader,
+    init_value_dataloader, print_dataloader_parameters
+)
 import torch
 from torch.utils.data import DataLoader, WeightedRandomSampler
 from sklearn.preprocessing import MultiLabelBinarizer
@@ -75,6 +78,7 @@ from util import (
 
 # From Microsoft's Github on SwinV2
 from swin_transformer_v2 import SwinTransformerV2
+from visualization_util import plot_confusion_matrices
 
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 
@@ -264,7 +268,10 @@ def main():
                 # Backward pass outside autocast
                 if train:
                     loss.backward()
-                    torch.nn.utils.clip_grad_norm_(classifier.model.parameters(), max_norm=1.0)
+                    torch.nn.utils.clip_grad_norm_(
+                        classifier.model.parameters(),
+                        max_norm=1.0
+                    )
                     classifier.optimizer.step()
                     classifier.optimizer.zero_grad()
                     classifier.ema_model.update_parameters(classifier.raw_model)
@@ -283,24 +290,20 @@ def main():
             best_thresh
         )
 
-
-        
+        # stage gates control contribution of Swin stages
         g = torch.sigmoid(
             classifier.raw_model.stage_gates
         ).detach().cpu().tolist()
         final_temp = classifier.raw_model.stage_temps[0].abs().item()
-        
-        
-        print([f"  stage_gates: {x:.8f}" for x in g])
-        print( f"  stage_temp  (final): {round(final_temp, 3)}")
+        if train:
+            print([f"  stage_gates: {x:.8f}" for x in g])
+            print( f"  stage_temp  (final): {round(final_temp, 3)}")
         
         mean_f1 = np.mean(f1s) if f1s else 0.0
         return avg_loss, np.mean(aucs), mean_f1, per_class_auc, per_class_f1, probs, labels
 
 
     # CSV log files    
-    epoch_logger = PerEpochCSVWriter(PER_EPOCH_CSV_FILE)
-    class_logger = PerClassCSVWriter(PER_CLASS_CSV_FILE)
 
     best_val = 0.0
     best_thresh = np.zeros(NUM_CLASSES)
@@ -311,7 +314,8 @@ def main():
 
     if RESUME_FILE:
         if not os.path.exists(RESUME_FILE):
-            raise FileNotFoundError(f"RESUME_FILE '{RESUME_FILE}' not found. Set to None to start fresh.")
+            raise FileNotFoundError(
+                f"RESUME_FILE '{RESUME_FILE}' not found. Set to None to start fresh.")
         print(f"Resuming from {RESUME_FILE} ...")
         ckpt = torch.load(RESUME_FILE, map_location=device, weights_only=False)
 
@@ -332,6 +336,9 @@ def main():
 
         print(f"  Resumed at epoch {start_epoch}, best_val={best_val:.4f}, no_improve={no_improve}")
 
+    resume_mode = RESUME_FILE is not None
+    epoch_logger = PerEpochCSVWriter(PER_EPOCH_CSV_FILE, append=resume_mode)
+    class_logger = PerClassCSVWriter(PER_CLASS_CSV_FILE, append=resume_mode)
 
     for epoch in range(start_epoch, NUM_EPOCHS + 1):
 
@@ -359,6 +366,8 @@ def main():
                 train=False,
                 eval_model=classifier.ema_model.module
         )
+
+        ### Metric Reporting ###
 
         print("  Per-class F1:")
         for cls, f1 in sorted(per_class_f1.items(), key=lambda x: x[1]):
@@ -400,7 +409,7 @@ def main():
                 epoch, classifier, best_val, no_improve
             )
 
-
+        ### Save new best model optimizing for AUC ###
         if val_auc > best_val:
             best_val = val_auc
             no_improve = 0
@@ -425,26 +434,15 @@ def main():
             no_improve += 1
             print(f"  (no improvement {no_improve}/{PATIENCE})")
 
-        # if view scale is approaching 2.0, its dominating classes where it may hurt AUC
+        
         print("view scale = ", torch.sigmoid(
             classifier.raw_model.view_scale).item() * 2.0)
         print(f"  overfit_gap={tr_auc - val_auc:.4f}")
-
-
         print(f"Epoch {epoch:02d}/{NUM_EPOCHS}  "
             f"train_loss={tr_loss:.4f}  train_auc={tr_auc:.4f}  "
             f"val_loss={val_loss:.4f}  val_auc={val_auc:.4f}")
-
-
         classifier.raw_model.print_stage_gates()
-
-        head_lr = next(
-            g["lr"] for g in classifier.optimizer.param_groups if g.get(
-                "layer_idx") == -1)
-        layer0_lr = next(
-            g["lr"] for g in classifier.optimizer.param_groups if g.get(
-                "layer_idx") == 0)
-        print(f"  head_lr={head_lr:.2e}  layer0_lr={layer0_lr:.2e}")
+        classifier.print_LRs()
 
         # Guard: don't stop before all unfreeze events have had time to stabilize
         if no_improve >= PATIENCE and epoch > scheduler.min_stop_epoch():
@@ -455,6 +453,12 @@ def main():
     class_logger.close()
     print("Done. Best val AUC:", round(best_val, 4))
 
+    plot_confusion_matrices(
+        val_labels,
+        val_probs, 
+        best_thresh,
+        ALL_CLASSES,
+    )
 
     if scheduler.is_swa():
         torch.optim.swa_utils.update_bn(
@@ -464,7 +468,10 @@ def main():
         )
 
         # fit temperature on the SWA model before saving
-        temperature_scaler = classifier.fit_and_attach_temperature(value_loader, NUM_CLASSES)
+        temperature_scaler = classifier.fit_and_attach_temperature(
+            value_loader,
+            NUM_CLASSES
+        )
 
         ckpt_file.save_final(
             scheduler.swa_model.module.state_dict(),

@@ -117,23 +117,21 @@ def init_device():
     return device
 
 class PerEpochCSVWriter:
-    def __init__(self, path):
-        self.path = path
-        ALL_CLASSES
-        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
-
-        self.f = open(self.path, "w", newline="")
-        self.writer = csv.writer(self.f)
-
-        self.writer.writerow([
-            "epoch",
-            "tr_loss", "tr_auc", "tr_f1",
-            "val_loss", "val_auc", "val_f1",
-            "val_thresh_sens", "val_thresh_spec", "val_thresh_ppv",
-            "val_thresh_npv", "val_thresh_alert_rate"
-        ] + [f"{c}_auc" for c in ALL_CLASSES] + [
-          f"{c}_thresh" for c in ALL_CLASSES
-        ])
+    def __init__(self, path: str, append: bool = False):
+        mode = "a" if (append and os.path.exists(path)) else "w"
+        write_header = mode == "w"
+        self._f = open(path, mode, newline="")
+        self._writer = csv.writer(self._f)
+        if write_header:
+            self._writer.writerow([
+                "epoch",
+                "tr_loss", "tr_auc", "tr_f1",
+                "val_loss", "val_auc", "val_f1",
+                "val_thresh_sens", "val_thresh_spec", "val_thresh_ppv",
+                "val_thresh_npv", "val_thresh_alert_rate"
+            ] + [f"{c}_auc" for c in ALL_CLASSES] + [
+            f"{c}_thresh" for c in ALL_CLASSES
+            ])
 
     def write_epoch(
         self,
@@ -156,7 +154,7 @@ class PerEpochCSVWriter:
         row += [float(
             best_thresh[i]
         ) if best_thresh[i] > 0 else 0.5 for i in range(NUM_CLASSES)]
-        self.writer.writerow(row)
+        self._writer.writerow(row)
         self.f.flush()
 
     def close(self):
@@ -171,32 +169,31 @@ class PerEpochCSVWriter:
 
 
 class PerClassCSVWriter:
-    def __init__(self, path):
-        self.path = path
-        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
-
-        self.f = open(self.path, "w", newline="")
-        self.writer = csv.writer(self.f)
-
-        self.writer.writerow([
-            "epoch",
-            "class",
-            "threshold",
-            "auc",
-            "sens",
-            "spec",
-            "ppv",
-            "npv",
-            "alert_rate",
-            "ece",
-            "tp",
-            "fp",
-            "tn",
-            "fn",
-        ])
+    def __init__(self, path: str, append: bool = False):
+        mode = "a" if (append and os.path.exists(path)) else "w"
+        write_header = mode == "w"
+        self._f = open(path, mode, newline="")
+        self._writer = csv.writer(self._f)
+        if write_header:
+            self._writer.writerow([
+                "_writer",
+                "class",
+                "threshold",
+                "auc",
+                "sens",
+                "spec",
+                "ppv",
+                "npv",
+                "alert_rate",
+                "ece",
+                "tp",
+                "fp",
+                "tn",
+                "fn",
+            ])
 
     def write_class_row(self, epoch, class_name, metrics, auc=None):
-        self.writer.writerow([
+        self._writer.writerow([
             epoch,
             class_name,
             metrics.get("threshold", ""),

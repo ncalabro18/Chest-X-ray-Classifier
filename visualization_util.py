@@ -10,6 +10,9 @@ import torch.nn.functional as F
 import cv2
 from PIL import Image
 
+from sklearn.metrics import multilabel_confusion_matrix, ConfusionMatrixDisplay
+import matplotlib.pyplot as plt
+
 
 def _to_data_url(pil_img: Image.Image, fmt: str = "JPEG", quality: int = 85) -> str:
     buf = io.BytesIO()
@@ -153,3 +156,32 @@ def generate_gradient_saliency(
         saliency,
         alpha=0.55
     ))
+
+
+def plot_confusion_matrices(labels, probs, thresholds, class_names, save_path="confusion_matrices.png"):
+    """
+    labels: (N, num_classes) numpy array
+    probs:  (N, num_classes) numpy array  
+    thresholds: (num_classes,) numpy array
+    """
+    preds = (probs >= thresholds).astype(int)
+    
+    mcm = multilabel_confusion_matrix(labels, preds)  # (num_classes, 2, 2)
+
+    n_classes = len(class_names)
+    cols = 4
+    rows = (n_classes + cols - 1) // cols
+    fig, axes = plt.subplots(rows, cols, figsize=(cols * 4, rows * 4))
+    axes = axes.flatten()
+
+    for i, (cm, name) in enumerate(zip(mcm, class_names)):
+        disp = ConfusionMatrixDisplay(cm, display_labels=["Negative", "Positive"])
+        disp.plot(ax=axes[i], colorbar=False)
+        axes[i].set_title(name, fontsize=9)
+
+    for j in range(i + 1, len(axes)):
+        axes[j].set_visible(False)
+
+    plt.tight_layout()
+    plt.savefig(save_path, dpi=150)
+    print(f"Saved to {save_path}")
