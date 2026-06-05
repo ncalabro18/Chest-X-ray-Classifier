@@ -1,0 +1,152 @@
+<div class="results-root">
+
+  @if (isLoading()) {
+    <p class="loading">Loading results...</p>
+  } @else if (error()) {
+    <p class="error">Error loading CSV: {{ error() }}</p>
+  } @else {
+
+    <!-- Top controls -->
+    <section class="results-controls">
+      <div class="control-group">
+        <label for="prioritySelect" class="control-label">Priority</label>
+        <select
+          id="prioritySelect"
+          class="control-select"
+          [ngModel]="selectedPriority()"
+          (ngModelChange)="selectPriority($event)">
+          @for (p of priorityOptions; track p.value) {
+            <option [value]="p.value">{{ p.label }}</option>
+          }
+        </select>
+      </div>
+
+      <div class="control-group">
+        <label for="classSelect" class="control-label">Disease</label>
+        <select
+          id="classSelect"
+          class="control-select"
+          [ngModel]="selectedClass()"
+          (ngModelChange)="selectClass($event)">
+          @for (cls of CLASS_ORDER; track cls) {
+            <option [value]="cls">{{ displayLabel(cls) }}</option>
+          }
+        </select>
+      </div>
+    </section>
+
+    <!-- Split layout -->
+    <div class="results-split">
+
+      <!-- LEFT: best epoch + global confusion -->
+      <div class="results-split__left">
+
+        <!-- Best epoch summary -->
+        @if (bestEpochRow()) {
+          <section class="card best-epoch-panel">
+            <h2 class="section-title">Best Epoch Summary</h2>
+
+            <!--
+            <div class="metric-block">
+                <span class="metric-label">Priority</span>
+                <span class="metric-value">{{ selectedPriority() }}</span>
+            </div>
+            -->
+            <div class="metric-block">
+                <span class="metric-label">Best Epoch</span>
+                <span class="metric-value">{{ bestEpochRow()!.epoch }}</span>
+            </div>
+            <div class="metric-block">
+                <span class="metric-label">Val AUC</span>
+                <span class="metric-value">{{ fmt3(bestEpochRow()!.val_auc) }}</span>
+            </div>
+            <div class="metric-block">
+                <span class="metric-label">Val F1</span>
+                <span class="metric-value">{{ fmt3(bestEpochRow()!.val_f1) }}</span>
+            </div>
+            <div class="metric-block">
+                <span class="metric-label">Val loss</span>
+                <span class="metric-value">{{ fmt4(bestEpochRow()!.val_loss) }}</span>
+            </div>
+          </section>
+        }
+
+        <!-- Global confusion -->
+        @if (globalConfusion()) {
+          <section class="card confusion-panel">
+            <h2 class="section-title">Overall confusion (any disease)</h2>
+
+            <div id="confusion-d3-container"></div>
+          </section>
+        }
+
+      </div>
+
+      <!-- RIGHT: per-class detail -->
+      <div class="results-split__right">
+
+        @if (selectedClassRow()) {
+          @let row = selectedClassRow()!;
+          <section class="card class-detail">
+            <h2 class="section-title">{{ displayLabel(row.class) }}</h2>
+
+            <div class="metrics-grid">
+              <div class="metric-block">
+                <span class="metric-label">AUC</span>
+                <span class="metric-value">{{ fmt3(row.auc) }}</span>
+              </div>
+              <div class="metric-block">
+                <span class="metric-label">Sensitivity</span>
+                <span class="metric-value">{{ pct(row.sens) }}</span>
+              </div>
+              <div class="metric-block">
+                <span class="metric-label">Specificity</span>
+                <span class="metric-value">{{ pct(row.spec) }}</span>
+              </div>
+              <div class="metric-block">
+                <span class="metric-label">PPV</span>
+                <span class="metric-value">{{ pct(row.ppv) }}</span>
+              </div>
+              <div class="metric-block">
+                <span class="metric-label">NPV</span>
+                <span class="metric-value">{{ pct(row.npv) }}</span>
+              </div>
+              <div class="metric-block">
+                <span class="metric-label">Balanced accuracy</span>
+                <span class="metric-value">
+                  {{ pct(balancedAcc(row)) }}
+                </span>
+              </div>
+              <div class="metric-block">
+                <span class="metric-label">F1 score</span>
+                <span class="metric-value">
+                  {{ fmt3(f1Score(row)) }}
+                </span>
+              </div>
+              <div class="metric-block">
+                <span class="metric-label">Alert rate</span>
+                <span class="metric-value">{{ pct(row.alert_rate) }}</span>
+              </div>
+              <div class="metric-block">
+                <span class="metric-label">ECE</span>
+                <span class="metric-value">{{ fmt4(row.ece) }}</span>
+              </div>
+              <div class="metric-block">
+                <span class="metric-label">Threshold</span>
+                <span class="metric-value">{{ fmt3(row.threshold) }}</span>
+              </div>
+            </div>
+          </section>
+          
+          <section class="card confusion-panel">
+            <h2 class="section-title">Class confusion matrix</h2>
+
+            <div id="class-confusion-d3-container"></div>
+          </section>
+        }
+
+      </div>
+    </div>
+  }
+
+</div>

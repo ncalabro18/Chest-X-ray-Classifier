@@ -1,0 +1,258 @@
+
+:host {
+  display: block;
+}
+
+/* Layout shell */
+
+.results-root {
+  font-family: var(--f-sans);
+  color: var(--c-text);
+  background: var(--c-bg);
+  padding: 1.5rem 2rem;
+  max-width: 1400px;
+  margin: 0 auto;
+}
+
+/* Top controls */
+
+.results-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1rem 1.5rem;
+  margin-bottom: 1.5rem;
+  align-items: flex-end;
+}
+
+.confusion-matrix {
+  margin-top: 0.7rem;
+  display: grid;
+  grid-template-columns: auto repeat(2, minmax(90px, 1fr));
+  gap: 0.4rem 0.5rem;
+  align-items: stretch;
+  font-size: 0.85rem;
+}
+
+.confusion-matrix__corner {
+  /* empty top-left cell */
+}
+
+.confusion-matrix__header {
+  font-weight: 600;
+  color: var(--c-text-mid);
+  text-align: center;
+}
+
+.confusion-svg {
+  display: block;
+}
+
+#class-confusion-d3-container,
+#confusion-d3-container {
+  display: flex;
+  justify-content: center; // center horizontally
+  align-items: center;     // center vertically within the card's content area
+  margin-top: 0.5rem;
+}
+
+.control-group {
+  display: flex;
+  flex-direction: column;
+  min-width: 180px;
+}
+
+.control-label {
+  font-size: 0.8rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--c-text-dim);
+  margin-bottom: 0.25rem;
+}
+
+.control-select {
+  border-radius: var(--radius-md);
+  border: 1px solid var(--c-border);
+  background: var(--c-surface);
+  padding: 0.4rem 0.6rem;
+  font-size: 0.9rem;
+  color: var(--c-text-mid);
+  outline: none;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+
+  &:focus {
+    border-color: var(--c-accent);
+    box-shadow: 0 0 0 1px var(--c-accent-tint);
+  }
+}
+
+/* Two-column split */
+
+.results-split {
+  display: flex;
+  gap: 1.5rem;
+  align-items: stretch;  // or remove align-items so stretch is default
+}
+.results-split__left,
+.results-split__right {
+  flex: 1 1 0;
+  min-width: 0;
+  /* Optional: */
+  display: flex;
+  flex-direction: column;
+}
+
+/* Stack on narrow screens */
+@media (max-width: 900px) {
+  .results-split {
+    flex-direction: column;
+  }
+}
+
+/* Card shell */
+
+.card {
+  background: var(--c-surface);
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--c-border);
+  min-height: 361px;
+  padding: 1.125rem 1.25rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+  box-shadow: 0 2px 6px rgba(15, 23, 42, 0.08);
+}
+
+/* Section titles & text */
+
+.section-title {
+  font-size: 1.05rem;
+  font-weight: 600;
+  margin: 0 0 0.4rem;
+  color: var(--c-text);
+}
+
+.section-sub {
+  font-size: 0.85rem;
+  color: var(--c-text-dim);
+  margin: 0;
+}
+
+/* Best epoch panel */
+
+.best-epoch-panel {
+  margin-bottom: 1rem;
+
+  p {
+    margin: 0.1rem 0;
+    font-size: 0.9rem;
+    color: var(--c-text-mid);
+  }
+}
+
+/* Overall confusion panel */
+
+.confusion-panel {
+  margin-top: 0.5rem;
+}
+
+.confusion-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(90px, 1fr));
+  gap: 0.5rem;
+  margin-top: 0.6rem;
+}
+
+.confusion-cell {
+  padding: 0.5rem 0.6rem;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--c-border-soft);
+  background: var(--c-surface-raised);
+  font-size: 0.85rem;
+  color: var(--c-text-mid);
+}
+
+.confusion-cell__abbr {
+  display: inline-block;
+  font-weight: 600;
+  margin-right: 0.25rem;
+  color: var(--c-text);
+}
+
+/* Color accents */
+
+.confusion-cell--tp {
+  background: var(--c-normal-tint);
+  border-color: var(--c-normal-border);
+  color: var(--c-normal);
+}
+
+.confusion-cell--tn {
+  background: var(--c-surface-raised);
+  border-color: var(--c-border-soft);
+}
+
+.confusion-cell--fp,
+.confusion-cell--fn {
+  background: var(--c-flag-tint);
+  border-color: var(--c-flag-border);
+  color: var(--c-flag);
+}
+
+/* Per-class detail panel */
+.class-detail,
+.best-epoch-panel {
+  margin-bottom: 1rem;
+
+  p {
+    margin: 0.1rem 0;
+    font-size: 0.9rem;
+    color: var(--c-text-mid);
+  }
+}
+
+
+.metrics-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 0.75rem 1rem;
+  margin-top: 0.6rem;
+}
+
+.metric-block {
+  padding: 0.5rem 0.6rem;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--c-border-soft);
+  background: var(--c-surface-raised);
+}
+
+.metric-label {
+  display: block;
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--c-text-dim);
+  margin-bottom: 0.15rem;
+}
+
+.metric-value {
+  font-size: 0.95rem;
+  font-weight: 600;
+  color: var(--c-text);
+}
+
+/* Error / loading */
+
+.error {
+  color: var(--c-flag);
+  background: var(--c-flag-tint);
+  border-radius: var(--radius-md);
+  border: 1px solid var(--c-flag-border);
+  padding: 0.5rem 0.75rem;
+  font-size: 0.9rem;
+}
+
+.loading {
+  font-size: 0.9rem;
+  color: var(--c-text-mid);
+}

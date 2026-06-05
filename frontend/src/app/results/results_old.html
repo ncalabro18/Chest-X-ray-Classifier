@@ -1,0 +1,483 @@
+<!-- results.html -->
+
+<div class="results-root">
+
+  <!--
+    MODEL METADATA HEADER
+   -->
+  <section class="meta-header" *ngIf="metadata">
+    <div class="meta-header__primary">
+      <div class="meta-header__title-block">
+        <span class="meta-header__run-label">Best Checkpoint Results</span>
+        <h1 class="meta-header__run-name">{{ metadata.runName }}</h1>
+        <p class="meta-header__arch">
+          {{ metadata.architecture }}
+          <span class="sep">·</span>
+          {{ metadata.dataset }}
+        </p>
+      </div>
+
+      <div class="meta-header__kpis">
+        <div class="kpi-card kpi-card--accent">
+          <span class="kpi-card__label">Macro AUC</span>
+          <span class="kpi-card__value">{{ fmt3(macroAuc()) }}</span>
+          <span class="kpi-card__sub">excl. No Finding</span>
+        </div>
+        <div class="kpi-card">
+          <span class="kpi-card__label">Best Epoch</span>
+          <span class="kpi-card__value">{{ metadata.bestEpoch }}</span>
+          <span class="kpi-card__sub" *ngIf="bestEpochRow()">
+            val loss {{ fmt4(bestEpochRow()!.val_loss) }}
+          </span>
+        </div>
+        <div class="kpi-card" *ngIf="bestEpochRow()">
+          <span class="kpi-card__label">Val F1</span>
+          <span class="kpi-card__value">{{ fmt3(bestEpochRow()!.val_f1) }}</span>
+          <span class="kpi-card__sub">at best checkpoint</span>
+        </div>
+        <div class="kpi-card" *ngIf="metadata.checkpointFile">
+          <span class="kpi-card__label">Checkpoint</span>
+          <span class="kpi-card__value kpi-card__value--file">{{ metadata.checkpointFile }}</span>
+          <span class="kpi-card__sub" *ngIf="metadata.trainedAt">{{ metadata.trainedAt }}</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Dataset split pills -->
+    <div class="meta-header__splits" *ngIf="metadata.totalImages">
+      <span class="split-pill">
+        <span class="split-pill__dot split-pill__dot--total"></span>
+        Total&nbsp;<strong>{{ metadata.totalImages | number }}</strong>
+      </span>
+      <span class="split-pill" *ngIf="metadata.trainSize">
+        <span class="split-pill__dot split-pill__dot--train"></span>
+        Train&nbsp;<strong>{{ metadata.trainSize | number }}</strong>
+      </span>
+      <span class="split-pill" *ngIf="metadata.valSize">
+        <span class="split-pill__dot split-pill__dot--val"></span>
+        Val&nbsp;<strong>{{ metadata.valSize | number }}</strong>
+      </span>
+      <span class="split-pill" *ngIf="metadata.testSize">
+        <span class="split-pill__dot split-pill__dot--test"></span>
+        Test&nbsp;<strong>{{ metadata.testSize | number }}</strong>
+      </span>
+    </div>
+
+    <!-- Pretraining chain -->
+    <div class="meta-header__pretrain" *ngIf="metadata.pretraining">
+      <span class="pretrain-label">Pre-training pipeline</span>
+      <span class="pretrain-value">{{ metadata.pretraining }}</span>
+    </div>
+
+    <!-- Notes / caveats -->
+    <div class="meta-header__notes" *ngIf="metadata.notes">
+      <span class="notes-icon">ℹ</span>
+      <p>{{ metadata.notes }}</p>
+    </div>
+  </section>
+
+
+  <!--
+    TRAINING CURVES (mini sparklines)
+   -->
+  <section class="training-curves" *ngIf="perEpochRows.length > 0">
+    <h2 class="section-title">Training Curves</h2>
+
+    <div class="curves-grid">
+
+      <div class="curve-card">
+        <div class="curve-card__header">
+          <span class="curve-card__name">Loss</span>
+          <div class="curve-legend">
+            <span class="legend-dot legend-dot--dim"></span> Train
+            <span class="legend-dot legend-dot--accent"></span> Val
+            <span class="legend-dot legend-dot--flag"></span> Best epoch
+          </div>
+        </div>
+        <canvas #lossCanvas width="520" height="88" class="sparkline-canvas"></canvas>
+        <div class="curve-card__stats" *ngIf="bestEpochRow()">
+          <span>Train {{ fmt4(bestEpochRow()!.tr_loss) }}</span>
+          <span>Val {{ fmt4(bestEpochRow()!.val_loss) }}</span>
+        </div>
+      </div>
+
+      <div class="curve-card">
+        <div class="curve-card__header">
+          <span class="curve-card__name">AUC</span>
+          <div class="curve-legend">
+            <span class="legend-dot legend-dot--dim"></span> Train
+            <span class="legend-dot legend-dot--accent"></span> Val
+            <span class="legend-dot legend-dot--flag"></span> Best epoch
+          </div>
+        </div>
+        <canvas #aucCanvas width="520" height="88" class="sparkline-canvas"></canvas>
+        <div class="curve-card__stats" *ngIf="bestEpochRow()">
+          <span>Train {{ fmt3(bestEpochRow()!.tr_auc) }}</span>
+          <span>Val {{ fmt3(bestEpochRow()!.val_auc) }}</span>
+        </div>
+      </div>
+
+    </div>
+
+    <!-- Best-epoch aggregate stats row -->
+    <div class="epoch-stats-strip" *ngIf="bestEpochRow()">
+      <div class="epoch-stat">
+        <span class="epoch-stat__label">Threshold Sens.</span>
+        <span class="epoch-stat__val">{{ pct(bestEpochRow()!.val_thresh_sens) }}</span>
+      </div>
+      <div class="epoch-stat">
+        <span class="epoch-stat__label">Threshold Spec.</span>
+        <span class="epoch-stat__val">{{ pct(bestEpochRow()!.val_thresh_spec) }}</span>
+      </div>
+      <div class="epoch-stat">
+        <span class="epoch-stat__label">Threshold PPV</span>
+        <span class="epoch-stat__val">{{ pct(bestEpochRow()!.val_thresh_ppv) }}</span>
+      </div>
+      <div class="epoch-stat">
+        <span class="epoch-stat__label">Threshold NPV</span>
+        <span class="epoch-stat__val">{{ pct(bestEpochRow()!.val_thresh_npv) }}</span>
+      </div>
+      <div class="epoch-stat"
+           [class.epoch-stat--warn]="alertRateWarning(bestEpochRow()!.val_thresh_alert_rate)">
+        <span class="epoch-stat__label">Alert Rate</span>
+        <span class="epoch-stat__val">{{ pct(bestEpochRow()!.val_thresh_alert_rate) }}</span>
+      </div>
+    </div>
+  </section>
+
+
+  <!--
+    PER-CLASS OVERVIEW TABLE
+   -->
+  <section class="per-class-overview" *ngIf="orderedClassRows().length > 0">
+    <div class="section-header">
+      <h2 class="section-title">Per-Class Performance</h2>
+      <p class="section-sub">Best checkpoint · Ordered by clinical priority</p>
+
+      <!-- Column group toggles -->
+      <div class="col-toggles">
+        <button
+          *ngFor="let cg of columnGroups"
+          class="col-toggle"
+          [class.col-toggle--active]="isGroupVisible(cg.key)"
+          (click)="toggleGroup(cg.key)"
+          type="button">
+          {{ cg.label }}
+        </button>
+      </div>
+    </div>
+
+    <div class="table-scroll-wrapper">
+      <table class="perf-table" aria-label="Per-class performance metrics">
+        <thead>
+          <tr>
+            <th class="col-class" scope="col">Class</th>
+            <th class="col-group" scope="col">Priority</th>
+
+            <!-- Discrimination -->
+            <ng-container *ngIf="isGroupVisible('discrimination')">
+              <th scope="col" title="Area Under ROC Curve">AUC</th>
+              <th scope="col" title="Sensitivity / Recall at operating threshold">Sens.</th>
+              <th scope="col" title="Specificity at operating threshold">Spec.</th>
+            </ng-container>
+
+            <!-- Operating point -->
+            <ng-container *ngIf="isGroupVisible('threshold')">
+              <th scope="col" title="Positive Predictive Value / Precision">PPV</th>
+              <th scope="col" title="Negative Predictive Value">NPV</th>
+              <th scope="col" title="Decision threshold">Thresh.</th>
+              <th scope="col" title="Fraction of studies flagged as positive">Alert&nbsp;Rate</th>
+            </ng-container>
+
+            <!-- Calibration -->
+            <ng-container *ngIf="isGroupVisible('calibration')">
+              <th scope="col" title="Expected Calibration Error - lower is better">ECE</th>
+            </ng-container>
+
+            <!-- Confusion counts -->
+            <ng-container *ngIf="isGroupVisible('counts')">
+              <th scope="col">TP</th>
+              <th scope="col">FP</th>
+              <th scope="col">TN</th>
+              <th scope="col">FN</th>
+            </ng-container>
+          </tr>
+        </thead>
+
+        <tbody>
+          <ng-container *ngFor="let group of clinicalGroups">
+            <!-- Group header row -->
+            <tr class="group-divider">
+              <td [attr.colspan]="tableColspan()" class="group-label">
+                {{ group.label }}
+              </td>
+            </tr>
+
+            <!-- Class rows -->
+            <tr
+              *ngFor="let row of orderedClassRows() | filterByGroup: group.classes"
+              class="class-row"
+              [class.class-row--selected]="isSelectedClass(normalizeClassKey(row.class))"
+              (click)="selectClass(normalizeClassKey(row.class))"
+              tabindex="0"
+              (keydown.enter)="selectClass(normalizeClassKey(row.class))"
+              (keydown.space)="selectClass(normalizeClassKey(row.class))"
+              [attr.aria-selected]="isSelectedClass(normalizeClassKey(row.class))">
+
+              <td class="col-class">
+                <span class="class-name">{{ displayLabel(normalizeClassKey(row.class)) }}</span>
+              </td>
+              <td class="col-group">
+                <span class="priority-badge" [attr.data-group]="groupForClass(normalizeClassKey(row.class))">
+                  {{ groupForClass(normalizeClassKey(row.class)).split('/')[0].trim() }}
+                </span>
+              </td>
+
+              <ng-container *ngIf="isGroupVisible('discrimination')">
+                <td [class]="aucClass(row.auc)" class="stat-cell stat-cell--auc">
+                  <span class="stat-bar" [style.width.%]="row.auc * 100"></span>
+                  <span class="stat-val">{{ fmt3(row.auc) }}</span>
+                </td>
+                <td class="stat-cell">{{ pct(row.sens) }}</td>
+                <td class="stat-cell">{{ pct(row.spec) }}</td>
+              </ng-container>
+
+              <ng-container *ngIf="isGroupVisible('threshold')">
+                <td class="stat-cell">{{ pct(row.ppv) }}</td>
+                <td class="stat-cell">{{ pct(row.npv) }}</td>
+                <td class="stat-cell stat-cell--thresh">{{ fmt3(row.threshold) }}</td>
+                <td class="stat-cell" [class.stat-cell--warn]="alertRateWarning(row.alert_rate)">
+                  {{ pct(row.alert_rate) }}
+                  <span class="warn-flag" *ngIf="alertRateWarning(row.alert_rate)" title="High alert rate - review threshold">⚠</span>
+                </td>
+              </ng-container>
+
+              <ng-container *ngIf="isGroupVisible('calibration')">
+                <td class="stat-cell" [class]="eceClass(row.ece)">{{ fmt4(row.ece) }}</td>
+              </ng-container>
+
+              <ng-container *ngIf="isGroupVisible('counts')">
+                <td class="stat-cell stat-cell--count stat-cell--tp">{{ row.tp | number }}</td>
+                <td class="stat-cell stat-cell--count stat-cell--fp">{{ row.fp | number }}</td>
+                <td class="stat-cell stat-cell--count stat-cell--tn">{{ row.tn | number }}</td>
+                <td class="stat-cell stat-cell--count stat-cell--fn">{{ row.fn | number }}</td>
+              </ng-container>
+            </tr>
+          </ng-container>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+
+  <!--
+    PER-CLASS DETAIL PANEL
+  -->
+  <section class="class-detail" *ngIf="selectedRow()">
+    <div class="class-detail__header">
+      <div class="class-detail__title-block">
+        <span class="class-detail__eyebrow">Class Detail</span>
+        <h2 class="class-detail__title">{{ displayLabel(selectedClass()) }}</h2>
+        <span class="class-detail__group-badge"
+              [attr.data-group]="groupForClass(selectedClass())">
+          {{ groupForClass(selectedClass()) }}
+        </span>
+      </div>
+
+      <!-- Class selector dropdown -->
+      <div class="class-selector">
+        <label for="classSelect" class="class-selector__label">View class:</label>
+        <select
+          id="classSelect"
+          class="class-selector__select"
+          [ngModel]="selectedClass()"
+          (ngModelChange)="selectClass($event)">
+          <optgroup
+            *ngFor="let group of clinicalGroups"
+            [label]="group.label">
+            <option *ngFor="let cls of group.classes" [value]="cls">
+              {{ displayLabel(cls) }}
+            </option>
+          </optgroup>
+        </select>
+      </div>
+    </div>
+
+    <div class="class-detail__body" *ngIf="selectedRow() as row">
+
+      <!-- Primary metrics row -->
+      <div class="detail-metrics-grid">
+
+        <div class="detail-metric detail-metric--primary">
+          <span class="detail-metric__label">AUC-ROC</span>
+          <span class="detail-metric__value" [class]="aucClass(row.auc)">{{ fmt3(row.auc) }}</span>
+          <div class="auc-bar-track">
+            <div class="auc-bar-fill" [style.width.%]="row.auc * 100" [class]="aucClass(row.auc)"></div>
+          </div>
+          <span class="detail-metric__interp">{{ aucInterpret(row.auc) }}</span>
+        </div>
+
+        <div class="detail-metric">
+          <span class="detail-metric__label">Sensitivity</span>
+          <span class="detail-metric__value">{{ pct(row.sens) }}</span>
+          <span class="detail-metric__sub">True positive rate</span>
+        </div>
+
+        <div class="detail-metric">
+          <span class="detail-metric__label">Specificity</span>
+          <span class="detail-metric__value">{{ pct(row.spec) }}</span>
+          <span class="detail-metric__sub">True negative rate</span>
+        </div>
+
+        <div class="detail-metric">
+          <span class="detail-metric__label">PPV</span>
+          <span class="detail-metric__value">{{ pct(row.ppv) }}</span>
+          <span class="detail-metric__sub">Precision</span>
+        </div>
+
+        <div class="detail-metric">
+          <span class="detail-metric__label">NPV</span>
+          <span class="detail-metric__value">{{ pct(row.npv) }}</span>
+          <span class="detail-metric__sub">Rule-out power</span>
+        </div>
+
+        <div class="detail-metric" [class.detail-metric--warn]="alertRateWarning(row.alert_rate)">
+          <span class="detail-metric__label">Alert Rate</span>
+          <span class="detail-metric__value">{{ pct(row.alert_rate) }}</span>
+          <span class="detail-metric__sub">Positive flag rate</span>
+        </div>
+
+        <div class="detail-metric">
+          <span class="detail-metric__label">Threshold</span>
+          <span class="detail-metric__value">{{ fmt3(row.threshold) }}</span>
+          <span class="detail-metric__sub">Decision boundary</span>
+        </div>
+
+        <div class="detail-metric" [class]="eceClass(row.ece)">
+          <span class="detail-metric__label">ECE</span>
+          <span class="detail-metric__value">{{ fmt4(row.ece) }}</span>
+          <span class="detail-metric__sub">Calibration error</span>
+        </div>
+
+      </div>
+
+      <!-- Confusion matrix -->
+      <div class="confusion-panel" *ngIf="confusionTotals() as totals">
+        <h3 class="confusion-panel__title">Confusion Matrix</h3>
+        <div class="confusion-grid">
+
+          <div class="confusion-grid__corner"></div>
+          <div class="confusion-grid__col-label">Predicted Positive</div>
+          <div class="confusion-grid__col-label">Predicted Negative</div>
+          <div class="confusion-grid__row-label">Actually Positive</div>
+
+          <div class="confusion-cell confusion-cell--tp">
+            <span class="confusion-cell__abbr">TP</span>
+            <span class="confusion-cell__val">{{ row.tp | number }}</span>
+            <span class="confusion-cell__pct">{{ pct(row.tp / totals.total) }}</span>
+          </div>
+          <div class="confusion-cell confusion-cell--fn">
+            <span class="confusion-cell__abbr">FN</span>
+            <span class="confusion-cell__val">{{ row.fn | number }}</span>
+            <span class="confusion-cell__pct">{{ pct(row.fn / totals.total) }}</span>
+          </div>
+
+          <div class="confusion-grid__row-label">Actually Negative</div>
+          <div class="confusion-cell confusion-cell--fp">
+            <span class="confusion-cell__abbr">FP</span>
+            <span class="confusion-cell__val">{{ row.fp | number }}</span>
+            <span class="confusion-cell__pct">{{ pct(row.fp / totals.total) }}</span>
+          </div>
+          <div class="confusion-cell confusion-cell--tn">
+            <span class="confusion-cell__abbr">TN</span>
+            <span class="confusion-cell__val">{{ row.tn | number }}</span>
+            <span class="confusion-cell__pct">{{ pct(row.tn / totals.total) }}</span>
+          </div>
+
+        </div>
+
+        <!-- Prevalence & derived stats -->
+        <div class="confusion-derived">
+          <span class="derived-stat">
+            <span class="derived-stat__label">Prevalence</span>
+            <span class="derived-stat__val">{{ pct(totals.prevalence) }}</span>
+          </span>
+          <span class="derived-stat">
+            <span class="derived-stat__label">Total samples</span>
+            <span class="derived-stat__val">{{ totals.total | number }}</span>
+          </span>
+          <span class="derived-stat">
+            <span class="derived-stat__label">F1 Score</span>
+            <span class="derived-stat__val">{{ fmt3(f1Score(row)) }}</span>
+          </span>
+          <span class="derived-stat">
+            <span class="derived-stat__label">Balanced Acc.</span>
+            <span class="derived-stat__val">{{ pct((row.sens + row.spec) / 2) }}</span>
+          </span>
+        </div>
+      </div>
+
+    </div>
+  </section>
+
+
+  <!--
+    DATA GAPS / CLINICAL NOTES BANNER
+   -->
+  <section class="data-gaps">
+    <h2 class="section-title section-title--sm">Model Evaluation Notes</h2>
+    <ul class="gaps-list">
+      <li class="gap-item gap-item--info">
+        <span class="gap-icon">ℹ</span>
+        <span>
+          <strong>Threshold selection method</strong> - Confirm whether thresholds were
+          optimised on the validation set (Youden's J, F1, or clinical sensitivity target).
+          Thresholds derived from the same split used for reporting will be optimistic;
+          consider a held-out test set for final values.
+        </span>
+      </li>
+      <li class="gap-item gap-item--warn">
+        <span class="gap-icon">⚠</span>
+        <span>
+          <strong>Class prevalence not reported</strong> - PPV and NPV are highly
+          prevalence-dependent. Include positive-case counts per split for full
+          interpretability (especially for rare classes: Hernia, Fibrosis, Emphysema).
+        </span>
+      </li>
+      <li class="gap-item gap-item--warn">
+        <span class="gap-icon">⚠</span>
+        <span>
+          <strong>Confidence intervals absent</strong> - AUC point estimates without
+          bootstrapped 95% CIs (or DeLong intervals) are insufficient for regulatory or
+          clinical validation contexts.
+        </span>
+      </li>
+      <li class="gap-item gap-item--warn">
+        <span class="gap-icon">⚠</span>
+        <span>
+          <strong>Subgroup / fairness evaluation missing</strong> - NIH ChestX-ray14 contains
+          demographic metadata (age, sex). Subgroup AUC stratification is standard practice
+          for chest AI systems prior to deployment.
+        </span>
+      </li>
+      <li class="gap-item gap-item--info">
+        <span class="gap-icon">ℹ</span>
+        <span>
+          <strong>Multi-label co-occurrence</strong> - Per-class metrics are marginal. Consider
+          reporting performance on the most common label combinations (e.g. Effusion + Atelectasis)
+          if downstream use involves multi-finding triage.
+        </span>
+      </li>
+      <li class="gap-item gap-item--info">
+        <span class="gap-icon">ℹ</span>
+        <span>
+          <strong>NIH label quality caveat</strong> - NIH ChestX-ray14 labels are NLP-mined
+          from radiology reports; known label noise (especially for Infiltration, Pneumonia,
+          Nodule) means reported metrics may underestimate true model performance on
+          radiologist-adjudicated sets.
+        </span>
+      </li>
+    </ul>
+  </section>
+
+</div>

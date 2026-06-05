@@ -1,21 +1,5 @@
-/* Global reset */
 
-html,
-body {
-  margin: 0;
-  padding: 0;
 
-  width: 100%;
-  min-height: 100%;
-
-  background: #0b1120;
-
-  font-family: 'Source Sans 3', 'Helvetica Neue', sans-serif;
-  font-weight: 300;
-
-  box-sizing: border-box;
-  -webkit-font-smoothing: antialiased;
-}
 
 *,
 *::before,
@@ -23,54 +7,58 @@ body {
   box-sizing: inherit;
 }
 
-
+ html,
+ body {
+   margin: 0;
+   padding: 0;
+   width: 100%;
+   min-height: 100%;
+   box-sizing: border-box;
+   background: var(--c-bg);
+   color: var(--c-text);
+   font-family: var(--f-sans);
+   font-weight: 300;
+   -webkit-font-smoothing: antialiased;
+}
 /* Design tokens ONLY */
 :root {
-  --c-bg: #f0f2f5;
-  --c-surface: #ffffff;
-  --c-surface-raised: #fafbfc;
-  --c-border: #dde1e7;
-  --c-border-soft: #eaedf1;
+  /* Backgrounds & surfaces */
+  --c-bg: #dde8;              /* darker, cooler page background */
+  --c-surface: #ffffff;         /* main cards */
+  --c-surface-raised: #f1f4fb;  /* raised chips/cards */
 
-  --c-text: #1c2128;
-  --c-text-mid: #4a5260;
-  --c-text-dim: #8892a0;
+  /* Borders (stronger) */
+  --c-border: #b4bfd2;          /* main border */
+  --c-border-soft: #d4dbe7;     /* inner/soft border */
 
-  --c-accent: #1a56a0;
-  --c-accent-tint: #ebf1fa;
-  --c-accent-mid: #2563b5;
+  /* Text */
+  --c-text: #0f172a;
+  --c-text-mid: #374151;
+  --c-text-dim: #6b7280;
 
-  --c-flag: #c0272d;
-  --c-flag-tint: #fdf2f2;
-  --c-flag-border: #f0c5c6;
+  /* Accent (primary) */
+  --c-accent: #155e9a;
+  --c-accent-mid: #1e6fb0;
+  --c-accent-tint: #d8e7fb;
 
-  --c-normal: #1a6e3c;
-  --c-normal-tint: #f0faf4;
-  --c-normal-border: #b8dfc8;
+  /* Alert / error */
+  --c-flag: #b02024;
+  --c-flag-tint: #f8e3e4;
+  --c-flag-border: #dd9fa3;
 
+  /* “Normal” / good */
+  --c-normal: #166534;
+  --c-normal-tint: #e0f3e8;
+  --c-normal-border: #8cc8a3;
+
+  /* Typography & radii */
   --f-serif: 'Spectral', Georgia, 'Times New Roman', serif;
   --f-sans: 'Source Sans 3', 'Helvetica Neue', sans-serif;
 
   --radius-sm: 3px;
   --radius-md: 5px;
   --radius-lg: 8px;
-}
 
-html,
-body {
-  margin: 0;
-  padding: 0;
+  outline: 4px solid #ff00ff !important;
 
-  width: 100%;
-  min-height: 100%;
-
-  box-sizing: border-box;
-
-  background: var(--c-bg);
-  color: var(--c-text);
-
-  font-family: var(--f-sans);
-  font-weight: 300;
-
-  -webkit-font-smoothing: antialiased;
 }
