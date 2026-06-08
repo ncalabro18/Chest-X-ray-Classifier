@@ -2,18 +2,105 @@
 
 ### Description
 
-This project focuses on building a model for multi-label classification of chest X-ray images using the NIH dataset.
+Multi-label chest X-ray classifier screening 14 thoracic diseases simultaneously, achieving 81.7% mean AUC on the NIH CXR8 dataset including data reserved for thresholds optimizing for sensitivity. Deployed as a secure microservice stack with defense-in-depth network isolation, it features image submission, attention and saliency map compared to the original image, sensitivity-optimized thresholds, an interactive results page to display model accuracy metrics, and Grafana for realtime metric monitoring.
 
-The task is challenging because each image can contain multiple diseases, and the dataset is imbalanced.
-
-To interface with the model, I design a secure web application which runs a selected checkpoint file.
+![Dashboard](assets/example_attention.png)
 
 I use FastAPI to handle a DMZ webserver. SlowAPI ratelimits requests for python services while [nginx](frontend/nginx.conf) rate-limits frontend requests. More details are in the [docker-compose file](docker-compose.yml). Cloudflared handles the direct ingress, which sends API requests to caddy. [Caddy](caddyfile) proxies the requests to the appropriate container address. https terminates at the cloudfared tunnel, caddy only accepts http.
 
-Prometheus and grafana are utilized to display realtime metrics extracted from nginx, the classifier, and the web api service.
+Prometheus and Grafana are utilized to display realtime metrics extracted from nginx, the classifier, and the web api service.
 
 
-The final goal of the model is optimizing for clinical relevance, using sensitivity threshold optimization: the model is more sensitive to anomalies, resulting in higher false positives but fewer false negatives. False negatives result in the patient being sent home with a disease; thus, the decision was made to optimize thresholds to prevent this.
+The model is optimized for clinical relevance, using sensitivity threshold optimization: the model is more sensitive to anomalies, resulting in higher false positives but fewer false negatives. False negatives result in the patient being sent home with a disease; thus, the decision was made to optimize thresholds to prevent this.
+
+
+## Local Execution / Model Reproduction
+
+### Classifier Web Server
+
+```bash
+git clone https://github.com/ncalabro18/Chest-X-ray-Classifier
+cd Chest-X-ray-Classifier
+```
+
+
+Create passwords for your environment using a text editor:
+
+```bash
+vim .env
+```
+
+Match variable names to:
+
+```bash
+CLASSIFIER_API_KEY=...
+CLOUDFLARE_TUNNEL_TOKEN=...
+CF_API_TOKEN=...
+GRAFANA_ADMIN_PASSWORD=...
+INTERNAL_SECRET=...
+```
+For local development ```CF_API_TOKEN``` and ```CLOUDFLARE_TUNNEL_TOKEN``` are not needed.
+The other 3 should be randomly initialized with a secure generator:
+```bash
+openssl rand -base64 32
+```
+
+```bash
+make dev
+```
+Is all that is needed. Navigate to http://localhost
+Local testing happens over http, not https.
+
+
+There are three other profiles:
+  - monitoring starts Grafana
+  - cve_scan checks for common vulnerabilities and expsures
+  - lint runs Angular's TypeScript linter
+
+```bash
+make cve_scan
+make monitoring
+make lint
+```
+
+
+To deploy, edit the domain in caddyfile and create a cloudflare tunnel that points to http://caddy:80.
+
+To access grafana, manually start the service. Visit at ```http://localhost:3000```. If deployed, remove it when not in use for stronger security.
+
+
+
+### Training
+
+To train, clone the repository.
+
+Recommended Python 3.11 for training
+
+```python --version```
+
+```pip install -r requirements.txt```
+
+
+Beyond Python and pip dependencies there are 2 more downloads:
+
+  [NIH Chest X-ray dataset](https://nihcc.app.box.com/v/ChestXray-NIHCC) (42 GB)
+  
+  To run train.py, all *_PATH variables must resolve. This includes the image root, metadata file (both in the link above), and checkpoint file.
+
+  __Note:__ Dataset is for training / validation purposes only. See [Web Server](#classifier-web-server)
+
+  [Custom Backbone Checkpoint](https://github.com/ncalabro18/Chest-X-ray-Classifier/releases/tag/checkpoint_file) (.2 GB)
+
+
+
+Use the 3.11 interpreter to run train.py. No arguments are needed.
+The script run_model.sh is useful to control GPU selection and python interpreter; edit the path to your local setup.
+
+
+```./run_model.sh train.py```
+
+This will output a best checkpoint, log file, and 2 CSV files
+
 
 
 ## Architecture
@@ -50,7 +137,7 @@ The main modification is that stage outputs 0-2 are tapped before their respecti
 
 ### Head
 
-The head receives token streams from all four backbone stages. The three early stages (0-2) each go through a stage_proj - a bottleneck Conv2d pair that projects each stage's native channel dimension down to C//4 then back up to C, after spatially pooling to a common 7×7 grid. Each projected map is then gated by a learned scalar (1 + tanh(gate_i)), letting the model suppress or amplify each scale's contribution. The gated stage tokens are concatenated with the final-stage tokens (scaled by a softplus temperature), then passed through a shared class_norm LayerNorm.
+The head receives token streams from all four backbone stages. The three early stages (0-2) each go through a stage_proj - a bottleneck Conv2d pair that projects each stage's native channel dimension down to C/4 then back up to C, after spatially pooling to a common 7×7 grid. Each projected map is then gated by a learned scalar (1 + tanh(gate_i)), letting the model suppress or amplify each scale's contribution. The gated stage tokens are concatenated with the final-stage tokens (scaled by a softplus temperature), then passed through a shared LayerNorm.
 
 Cross-attention then operates with num_classes learned query vectors against this full multi-scale token set, producing one feature vector per class. The conditioned class features go through a three-layer MLP head (C -> 256 -> 1) to produce the final per-class logits.
 
@@ -61,92 +148,16 @@ After probabilities are calculated, final thresholds are applied to aid in diagn
 
 ### Model Output
 
-The model gives final probabilities which can be tuned to optimize for different goals. For the final model, sensitivity optimization is utilized rather than f1 or Jouden's.
+The model gives final probabilities which can be tuned to optimize for different goals. For the final model, sensitivity optimization is utilized rather than f1 or Youden's J statistic.
 
-Attention maps and saliency maps are generated to display the decision making areas weighted the highest for each positive finding.
+Attention maps and saliency maps are generated to display the decision making areas with the hightest weights for each positive finding.
 
-## Local Execution
-
-### Classifier Web Server
-
-```git clone https://github.com/ncalabro18/Chest-X-ray-Classifier```
-
-```cd Chest-X-ray-Classifier```
-
-Create passwords for your environment:
-
-
-```vim .env```
-
-```.env``` Should match variable names to:
-
-```
-CLASSIFIER_API_KEY=...
-CLOUDFLARE_TUNNEL_TOKEN=...
-CF_API_TOKEN=...
-GRAFANA_ADMIN_PASSWORD=...
-INTERNAL_SECRET=...
-```
-
-Add under caddy service
-```
-    ports:
-      "127.0.0.1:80:80"
-```
-
-Then,
-
-
-```docker-compose up```
-
-
-Is all that is needed. Navigate to http://localhost
-Local testing happens over http, not https.
-
-
-
-To run vulnerability scanning before a run:
-
-```make cve_scan```
-
-To deploy, edit the address in caddyfile and create a cloudflare tunnel that points to http://caddy:80.
-
-### Training
-
-To train, clone the repository.
-
-Recommended Python 3.11 for training
-
-```python --version```
-
-```pip install -r requirements.txt```
-
-
-Beyond Python and pip dependencies there are 2 more downloads:
-
-  [NIH Chest X-ray dataset](https://nihcc.app.box.com/v/ChestXray-NIHCC) (42 GB)
-  
-  To run train.py, all *_PATH variables must resolve. This includes the image root, metadata file (both in the link above), and checkpoint file (following link).
-
-  __Note:__ Dataset is for training / validation purposes only. See [Web Server](#classifier-web-server)
-
-  [Microsoft SimMIM Swin small checkpoint](https://huggingface.co/zdaxie/SimMIM/blob/main/simmim_swinv2_pretrain_models/swinv2_small_1k_500k.pth) (.2 GB)
-
-
-
-Use the 3.11 interpreter to run train.py. No arguments are needed.
-The script run_model.sh is useful to control GPU selection and python interpreter; edit the path to your local setup.
-
-
-```./run_model.sh train.py```
-
-This will output a best checkpoint, log file, and 2 CSV files
 
 
 ## Results
 
-Average AUC of diseases of the saved model is just under 81%.
-With threshold optimization less data is used in training, which is my main suspect as to why it is about a percentage below standards on the dataset given the noise of the labels and classification challenge.
+
+Mean AUC of 81.5% on a patient-level held-out validation set, competitive with published benchmarks on this dataset. Thresholds are optimized for sensitivity rather than F1, prioritizing recall to minimize missed diagnoses.
 
 Future efforts will focus on multi-image analysis, increasing generalization with extra datsets, and improving maintainability.
 
@@ -176,8 +187,49 @@ Mean: ```5798.3```
 Standard Deviation: ```5429.6```
 
 
+## Network / Microservice Diagram
 
-## Authors:
+```mermaid
+graph TB
+    internet([internet])
+
+    subgraph ingress["ingress (external)"]
+        cloudflared[cloudflared]
+    end
+
+    subgraph caddy_internal["caddy_internal (internal)"]
+        caddy[caddy]
+    end
+
+    subgraph dmz["dmz (internal)"]
+        frontend[frontend - Nginx serving Angular]
+        web[web - input sanitization + rate limit]
+    end
+
+    subgraph backend["backend (internal)"]
+        classifier[classifier - inference API]
+    end
+
+    subgraph monitoring["monitoring (internal)"]
+        prometheus[prometheus]
+        nginx_exporter[nginx-exporter]
+        grafana[grafana]
+    end
+
+    internet --> cloudflared
+    cloudflared --> caddy
+    caddy --> frontend
+    caddy --> web
+    web --> classifier
+
+    classifier -.->|scrape| prometheus
+    web -.->|scrape| prometheus
+    frontend -.->|scrape| nginx_exporter
+    nginx_exporter -.->|scrape| prometheus
+    prometheus --> grafana
+```
+
+## Authors
 
 Nicholas Calabro
 
@@ -195,6 +247,8 @@ Hilary Jaen Rodriguez
 Extended Final Project for a Computer Science Special Topics Elective: _Computing for Health and Medicine_
 
 [Professor Wenjin's Course Page](https://www.cs.uml.edu/~wzhou/comp5300.html)
+
+
 
 
 ## References
