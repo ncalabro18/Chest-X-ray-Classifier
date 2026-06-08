@@ -81,7 +81,7 @@ export class ResultsComponent implements AfterViewInit {
   error = signal<string | null>(null);
 
   readonly priorityOptions: { value: PriorityMetric; label: string }[] = [
-    { value: 'auc', label: 'AUC (Selected Epoch for Inference)' },
+    { value: 'auc', label: 'AUC' },
     { value: 'f1', label: 'F1' },
     { value: 'sens', label: 'Sensitivity' },
     { value: 'spec', label: 'Specificity' },
