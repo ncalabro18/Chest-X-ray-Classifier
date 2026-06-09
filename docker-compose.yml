@@ -1,23 +1,27 @@
-# docker-compose.yml
+# © 2026 Nicholas J. Calabro. All rights reserved.
+# Chest X-ray Classifier - docker-compose.yml
+# use this file to deploy or locally test the AI model web interface
+# see README.md for instructions to execute this file
+# it also has a network topology digram to show how microservices communicate
 
 # classifier runs the ML model API
 
-# web runs the exposed API frontend sends requests to
+# web runs the exposed API that frontend (Nginx) sends requests to
 
-# caddy proxies requests to web, frontend, and classifier
-# using TLS
 
 # frontend runs the Angular nginx server
 # prometheus collects useful metrics
 # grafana displays them in a browser
+# caddy serves as a reverse proxy from the tunnel and adds a secret header web verifies
+#   TLS is terminated at cloudflared, not caddy
 
-# frontend and web are to be served with public access
-# the rest (in particular Classifier) should be private
 
-# run services for testing with docker-compose up
 
-# use make deploy scans for common vulnerabilities and explosures
+# use make cve-scan for common vulnerabilities and explosures
 # this runs the scan profile, the cve-scan service
+
+# for best security posture, keep grafana and caddy-dev service
+# active only when in use (by non threat-actors)
 
 services:
 
@@ -68,6 +72,8 @@ services:
       start_period: 40s # failures dont count to retries until this ends
 
   
+  # web monitors classifier, ratelimits requests, raises exceptions to
+  # invalid images, and serves as an extra layer of security
   web:
     build:
       context: .
@@ -144,22 +150,52 @@ services:
       start_period: 15s
 
 
+  ### Monitoring services that are always up ###
+
+  prometheus:
+    image: prom/prometheus:latest
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    expose:
+      - "9090"
+    networks:
+      - monitoring
+
+  # exports nginx promentheus metrics
+  nginx-exporter:
+    image: nginx/nginx-prometheus-exporter:latest
+    command:
+      - --nginx.scrape-uri=http://frontend:4000/stub_status
+    expose:
+      - "9113"
+    depends_on:
+      frontend:
+        condition: service_healthy
+
+    networks:
+      - monitoring
+
+
+  #### Begin Profile Services ####
+  # (not run with docker-compose up)
+
+  ### deploy profile ###
+  # Requires copying 2 environment variables into .env
+  # And setting up the tunnel in Zero-Trust web dashboard
   cloudflared:
+    profiles:
+      - deploy
     image: cloudflare/cloudflared:latest
     restart: unless-stopped
-    command: tunnel --no-autoupdate --protocol http2 run --token ${CLOUDFLARE_TUNNEL_TOKEN}    
-    # --config /etc/cloudflared/config.yml
-    # volumes:
-    #  - ./tunnel_config.yml:/etc/cloudflared/config.yml
-    
+    command: tunnel --no-autoupdate --protocol http2 run --token ${CLOUDFLARE_TUNNEL_TOKEN}
     networks:
-      - ingress
-
+      - ingress # only access point to ingress
+      - caddy_internal
           
     depends_on:
       caddy:
         condition: service_healthy
-    
 
     healthcheck:
       test: ["CMD", "cloudflared", "tunnel", "--metrics", "0.0.0.0:20241", "ready"]
@@ -168,8 +204,11 @@ services:
       retries: 3
       start_period: 10s
 
-
+# TLS terminates at cloudflared
+# used as a reverse proxy only
   caddy:
+    profiles:
+      - deploy
     image: caddy:2
 
     restart: unless-stopped
@@ -192,35 +231,29 @@ services:
       - "443"
 
     networks:
-      - ingress
+      - caddy_internal
       - dmz
       - monitoring
-
    
     healthcheck:
       test:
         [
           "CMD-SHELL",
-          "wget -qO- http://localhost:80/ >/dev/null 2>&1"
+          "wget -qS http://localhost:80/ 2>&1 | grep -q 'HTTP/'"
         ]
       interval: 15s
       timeout: 5s
       retries: 3
       start_period: 10s
 
-
-  prometheus:
-    image: prom/prometheus:latest
-    volumes:
-      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
-      - prometheus_data:/prometheus
-    expose:
-      - "9090"
-    networks:
+  # displays metrics in a web application
+  grafana:
+    # do not run by default; security concern
+    # run grafana when it is being used only
+    # keeping it under the monitoring profile disables it by default
+    profiles:
       - monitoring
 
-
-  grafana:
     image: grafana/grafana:latest
     ports:
       - "127.0.0.1:3000:3000"
@@ -228,7 +261,7 @@ services:
       - grafana_data:/var/lib/grafana
     environment:
       GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD}
-      GF_SERVER_ROOT_URL: "https://localhost/grafana/"
+      GF_SERVER_ROOT_URL: "http://0.0.0.0:3000/"
       GF_SERVER_SERVE_FROM_SUB_PATH: "true"
       GF_AUTH_ANONYMOUS_ENABLED: false
       GF_SECURITY_DISABLE_GRAVATAR: true
@@ -237,22 +270,50 @@ services:
       - prometheus
     networks:
       - monitoring
-    profiles:
-      - monitoring
+      - grafana_ingress
 
-# exports nginx promentheus metrics
-  nginx-exporter:
-    image: nginx/nginx-prometheus-exporter:latest
-    command:
-      - --nginx.scrape-uri=http://frontend:4000/stub_status
-    expose:
-      - "9113"
+
+  caddy-dev:
+    profiles:
+      - dev
+    image: caddy:2
+
+    restart: unless-stopped
+
+    volumes:
+      - ./Caddyfile.dev:/etc/caddy/Caddyfile
+      - caddy_data:/data
+      - caddy_config:/config
+      - ./certs:/etc/caddy/certs
+
     depends_on:
       frontend:
         condition: service_healthy
+    
+    environment:
+      INTERNAL_SECRET: ${INTERNAL_SECRET}
+
+    # use ports on caddy-dev
+    ports:
+      - "127.0.0.1:14000:80"
 
     networks:
+      - caddy_ingress
+      - dmz
       - monitoring
+   
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "wget -qS http://localhost:80/ 2>&1 | grep -q 'HTTP/'"
+        ]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+
 
   # has its own profile; not run with docker-compose up
   cve-scan:
@@ -272,8 +333,14 @@ services:
 
 
 networks:
+
+  # ingress is the only public network that is run continously
   ingress:
     driver: bridge
+
+  caddy_internal:
+    driver: bridge
+    internal: true
 
   dmz:
     driver: bridge
@@ -288,7 +355,14 @@ networks:
     driver: bridge
     internal: true
 
-
+  ### Should not stay active ###
+  grafana_ingress:
+    driver: bridge
+  caddy_ingress:
+    driver: bridge
+    
+    
+    
 
 volumes:
   prometheus_data:

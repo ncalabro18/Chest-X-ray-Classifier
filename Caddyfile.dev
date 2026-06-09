@@ -1,4 +1,5 @@
-http://classifier.ncalabro.net {
+
+:80 {
 	encode gzip zstd
 
 	handle /metrics {
