@@ -4,8 +4,10 @@ Swin-Transformer/
 __pycache__/
 *.py[cod]
 
+bash.exe.stackdump
 
 # For security, do NOT remove:
 *.pth
 .env
 certs/
+
