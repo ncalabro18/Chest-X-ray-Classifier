@@ -13,7 +13,7 @@
 	}
 
 	handle /status {
-		reverse_proxy web:8000
+		reverse_proxy web-dev:8000
 	}
 
 	handle /grafana/* {
@@ -21,7 +21,7 @@
 	}
 
 	handle {
-		reverse_proxy frontend:4000
+		reverse_proxy frontend-dev:4000
 	}
 
 	header {

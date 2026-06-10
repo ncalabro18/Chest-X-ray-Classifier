@@ -1,0 +1,26 @@
+# build
+FROM node:22-alpine AS builder
+
+WORKDIR /app
+
+# Install dependencies first (layer cache)
+COPY package*.json ./
+RUN npm ci
+
+# Build production bundle
+COPY . .
+RUN npm run build -- --configuration production
+
+
+# serve
+FROM nginx:1.27-alpine AS runtime
+
+# Nginx config (see nginx.conf in repo root)
+COPY nginx.conf.dev /etc/nginx/nginx.conf
+
+# Copy built Angular app
+# Adjust 'dist/app/browser' to match your angular.json outputPath
+COPY --from=builder /app/dist/frontend/browser /usr/share/nginx/html
+
+USER nginx
+EXPOSE 4000

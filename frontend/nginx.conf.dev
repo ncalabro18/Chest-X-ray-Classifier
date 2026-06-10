@@ -1,0 +1,99 @@
+# nginx.conf
+# Serves the Angular SPA and reverse-proxies /submit -> web:8000
+
+worker_processes auto;
+error_log  /dev/stderr warn;
+pid        /tmp/nginx.pid;
+
+events {
+    worker_connections 1024;
+}
+
+http {
+    # Redirect all temp dirs to /tmp (world-writable, on tmpfs)
+    client_body_temp_path  /tmp/client_temp;
+    proxy_temp_path        /tmp/proxy_temp;
+    fastcgi_temp_path      /tmp/fastcgi_temp;
+    uwsgi_temp_path        /tmp/uwsgi_temp;
+    scgi_temp_path         /tmp/scgi_temp;
+    include      /etc/nginx/mime.types;
+    default_type application/octet-stream;
+
+    sendfile        on;
+    tcp_nopush      on;
+    keepalive_timeout 65;
+    server_tokens off;   # don't advertise nginx version
+
+    # Limit upload body size to match web service (10 MB + headroom)
+    client_max_body_size 11M;
+
+    # Per-IP request rate limit zone
+    limit_req_zone $binary_remote_addr zone=submit_limit:10m rate=5r/m;
+
+    # Per-IP concurrent connection limit
+    limit_conn_zone $binary_remote_addr zone=addr:10m;
+    # Return status when rate-limited
+    limit_req_status 429;
+
+    server {
+        listen 4000;
+        server_name _;
+
+        root  /usr/share/nginx/html;
+        index index.html;
+
+        access_log /dev/stdout;
+
+        listen 8080;  # internal only, never exposed publicly
+        
+        location = /stub_status {
+            stub_status;
+            allow 172.16.0.0/12;
+
+
+            deny all;
+        }
+
+        # Health check
+        location = /health {
+            access_log off;
+            add_header Content-Type text/plain;
+            return 200 "ok";
+        }
+
+
+        # 
+        location = /status {
+            proxy_pass http://web-dev:8000;
+        }
+
+        # Proxy /submit -> FastAPI web service
+        location = /submit {
+            # Burst handling
+            limit_req zone=submit_limit burst=3 nodelay;
+
+            # Max simultaneous connections per IP
+            limit_conn addr 3;
+
+            proxy_pass         http://web-dev:8000/submit;
+            proxy_http_version 1.1;
+            proxy_set_header   Host              $host;
+            proxy_set_header   X-Real-IP         $remote_addr;
+            proxy_set_header   X-Forwarded-For   $proxy_add_x_forwarded_for;
+            proxy_read_timeout 35s;
+            proxy_request_buffering on;
+        }
+
+        # Cache hashed asset bundles aggressively
+        # Note: avoid {n,m} quantifiers - nginx treats { } as variable syntax
+        location ~* \.[0-9a-f]+\.(js|css|woff2?)$ {
+            expires 1y;
+            add_header Cache-Control "public, immutable";
+        }
+
+        # Angular SPA
+        location / {
+            try_files $uri $uri/ /index.html;
+        }
+    }
+}

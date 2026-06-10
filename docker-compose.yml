@@ -83,6 +83,7 @@ services:
       CLASSIFIER_API_KEY: "${CLASSIFIER_API_KEY}"
       INTERNAL_SECRET: ${INTERNAL_SECRET}
       MAX_BYTES: "10485760"
+      CLASSIFIER_URL: "http://classifier:9000"
     expose:
       - "9091"
       - "8000"
@@ -117,7 +118,7 @@ services:
 
   frontend:
     build:
-      context: ./frontend   # directory containing the Angular project
+      context: ./frontend
       dockerfile: ../Dockerfile.frontend
     image: local-frontend:latest
     expose:
@@ -273,6 +274,55 @@ services:
       - grafana_ingress
 
 
+  ### Begin Local Development Services ###
+  classifier-dev:
+    profiles:
+      - dev
+    build:
+      context: .
+      dockerfile: Dockerfile.classifier
+    image: local-classifier:latest
+    environment:
+      PYTHONUNBUFFERED: "1"
+      NO_ALBUMENTATIONS_UPDATE: "1"
+      API_KEY: "${CLASSIFIER_API_KEY}"
+    expose:
+      - "9000" # API
+      - "9091" # Monitoring
+    deploy:
+      resources:
+        limits:
+          memory: 4g
+          cpus: "4.0"
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: ["gpu"]
+
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    read_only: true
+    tmpfs:
+      - /tmp
+      - /home/appuser/.cache
+    networks:
+      - backend-dev
+    
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "PYTHONDONTWRITEBYTECODE=1 python3 -c \"import os, urllib.request; req = urllib.request.Request('http://localhost:9000/ready', headers={'X-API-Key': os.environ.get('API_KEY', '')}); urllib.request.urlopen(req, timeout=5)\""
+        ]
+      interval: 20s
+      timeout: 10s
+      retries: 5
+      start_period: 40s # failures dont count to retries until this ends
+  
+
   caddy-dev:
     profiles:
       - dev
@@ -282,14 +332,10 @@ services:
 
     volumes:
       - ./Caddyfile.dev:/etc/caddy/Caddyfile
-      - caddy_data:/data
-      - caddy_config:/config
+      - caddy_data-dev:/data
+      - caddy_config-dev:/config
       - ./certs:/etc/caddy/certs
 
-    depends_on:
-      frontend:
-        condition: service_healthy
-    
     environment:
       INTERNAL_SECRET: ${INTERNAL_SECRET}
 
@@ -298,20 +344,63 @@ services:
       - "127.0.0.1:14000:80"
 
     networks:
-      - caddy_ingress
-      - dmz
-      - monitoring
-   
-    healthcheck:
-      test:
-        [
-          "CMD-SHELL",
-          "wget -qS http://localhost:80/ 2>&1 | grep -q 'HTTP/'"
-        ]
-      interval: 15s
-      timeout: 5s
-      retries: 3
-      start_period: 10s
+      - ingress-dev
+      - dmz-dev
+
+  
+  frontend-dev:
+    profiles:
+      - dev
+    build:
+      context: ./frontend
+      dockerfile: ../Dockerfile.frontend.dev
+    image: local-frontend-dev:latest
+    expose:
+      - "4000"
+    depends_on:
+      - web-dev
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    read_only: true
+    tmpfs:
+      - /tmp:uid=101,gid=101   # nginx user in alpine is uid/gid 101
+      - /var/cache/nginx
+      - /var/run
+    networks:
+      - dmz-dev        # proxies to web, no direct backend access
+
+  # web monitors classifier, ratelimits requests, raises exceptions to
+  # invalid images, and serves as an extra layer of security
+  web-dev:
+    profiles:
+      - dev
+    build:
+      context: .
+      dockerfile: Dockerfile.web
+    image: local-web:latest
+    environment:
+      CLASSIFIER_API_KEY: "${CLASSIFIER_API_KEY}"
+      INTERNAL_SECRET: ${INTERNAL_SECRET}
+      MAX_BYTES: "10485760"
+      CLASSIFIER_URL: "http://classifier-dev:9000"
+    expose:
+      - "9091"
+      - "8000"
+    depends_on:
+      - classifier-dev
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    read_only: true
+    tmpfs:
+      - /tmp
+      - /home/appuser/.cache
+    networks:
+      - backend-dev
+      - dmz-dev
 
 
 
@@ -355,17 +444,28 @@ networks:
     driver: bridge
     internal: true
 
+
+  dmz-dev:
+    driver: bridge
+    internal: true
+
+  backend-dev:
+    driver: bridge
+    internal: true
+
+
   ### Should not stay active ###
+  ingress-dev:
+    driver: bridge
   grafana_ingress:
     driver: bridge
-  caddy_ingress:
-    driver: bridge
-    
-    
-    
+
+
 
 volumes:
   prometheus_data:
   grafana_data:
   caddy_data:
   caddy_config:
+  caddy_data-dev:
+  caddy_config-dev:
