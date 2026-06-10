@@ -1,1 +1,0 @@
-epoch,tr_loss,tr_auc,tr_f1,val_loss,val_auc,val_f1,Atelectasis,Cardiomegaly,Consolidation,Edema,Effusion,Emphysema,Fibrosis,Hernia,Infiltration,Mass,No Finding,Nodule,Pleural_Thickening,Pneumonia,Pneumothorax
