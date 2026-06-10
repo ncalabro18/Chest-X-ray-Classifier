@@ -256,3 +256,18 @@
   font-size: 0.9rem;
   color: var(--c-text-mid);
 }
+
+.op-label {
+  font-size: 12px;
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--color-text-tertiary); /* or whatever your muted token is */
+  margin: 0 0 8px;
+}
+
+.op-divider {
+  border: none;
+  border-top: 1px solid var(--color-border);
+  margin: 1.25rem 0 1rem;
+}

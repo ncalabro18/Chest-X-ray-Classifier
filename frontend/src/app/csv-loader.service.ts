@@ -17,6 +17,11 @@ export interface PerClassRow {
   fp: number;
   tn: number;
   fn: number;
+  spec_thresh_sens:       number;
+  spec_thresh_spec:       number;
+  spec_thresh_ppv:        number;
+  spec_thresh_npv:        number;
+  spec_thresh_alert_rate: number;
 }
 
 export interface PerEpochRow {
@@ -54,6 +59,7 @@ export interface ModelMetadata {
   providedIn: 'root',
 })
 export class CsvLoaderService {
+
   async loadPerClass(path: string): Promise<PerClassRow[]> {
     const text = await fetch(path).then((res) => res.text());
 
@@ -85,6 +91,7 @@ export class CsvLoaderService {
             spec_thresh_ppv: Number(r['spec_thresh_ppv']),
             spec_thresh_npv: Number(r['spec_thresh_npv']),
             spec_thresh_alert_rate: Number(r['spec_thresh_alert_rate'])
+            
           }));
           resolve(rows);
         },

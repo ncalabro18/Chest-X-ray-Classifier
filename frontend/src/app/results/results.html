@@ -89,63 +89,97 @@
           @let row = selectedClassRow()!;
           <section class="card class-detail">
             <h2 class="section-title">{{ displayLabel(row.class) }}</h2>
+            <div class="metrics-grid-section">
 
-            <div class="metrics-grid">
-              <div class="metric-block">
-                <span class="metric-label">AUC</span>
-                <span class="metric-value">{{ fmt3(row.auc) }}</span>
+              <!-- Operating-point-agnostic -->
+              <div class="metrics-grid">
+                <div class="metric-block">
+                  <span class="metric-label">AUC</span>
+                  <span class="metric-value">{{ fmt3(row.auc) }}</span>
+                </div>
+                <div class="metric-block">
+                  <span class="metric-label">Balanced accuracy</span>
+                  <span class="metric-value">{{ pct(balancedAcc(row)) }}</span>
+                </div>
+                <div class="metric-block">
+                  <span class="metric-label">F1 score</span>
+                  <span class="metric-value">{{ fmt3(f1Score(row)) }}</span>
+                </div>
+                <div class="metric-block">
+                  <span class="metric-label">ECE</span>
+                  <span class="metric-value">{{ fmt4(row.ece) }}</span>
+                </div>
               </div>
-              <div class="metric-block">
-                <span class="metric-label">Sensitivity</span>
-                <span class="metric-value">{{ pct(row.sens) }}</span>
+
+              <hr class="op-divider" />
+
+              <!-- Sensitivity operating point -->
+              <p class="op-label">Sensitivity operating point</p>
+              <div class="metrics-grid">
+                <div class="metric-block">
+                  <span class="metric-label">Sensitivity</span>
+                  <span class="metric-value">{{ pct(row.sens) }}</span>
+                </div>
+                <div class="metric-block">
+                  <span class="metric-label">Specificity</span>
+                  <span class="metric-value">{{ pct(row.spec) }}</span>
+                </div>
+                <div class="metric-block">
+                  <span class="metric-label">PPV</span>
+                  <span class="metric-value">{{ pct(row.ppv) }}</span>
+                </div>
+                <div class="metric-block">
+                  <span class="metric-label">NPV</span>
+                  <span class="metric-value">{{ pct(row.npv) }}</span>
+                </div>
+                <div class="metric-block">
+                  <span class="metric-label">Alert rate</span>
+                  <span class="metric-value">{{ pct(row.alert_rate) }}</span>
+                </div>
+                <div class="metric-block">
+                  <span class="metric-label">Threshold</span>
+                  <span class="metric-value">{{ fmt3(row.threshold) }}</span>
+                </div>
               </div>
-              <div class="metric-block">
-                <span class="metric-label">Specificity</span>
-                <span class="metric-value">{{ pct(row.spec) }}</span>
+
+              <hr class="op-divider" />
+
+              <!-- Specificity operating point -->
+              <p class="op-label">Specificity operating point</p>
+              <div class="metrics-grid">
+                <div class="metric-block">
+                  <span class="metric-label">Sensitivity</span>
+                  <span class="metric-value">{{ pct(row.spec_thresh_sens) }}</span>
+                </div>
+                <div class="metric-block">
+                  <span class="metric-label">Specificity</span>
+                  <span class="metric-value">{{ pct(row.spec_thresh_spec) }}</span>
+                </div>
+                <div class="metric-block">
+                  <span class="metric-label">PPV</span>
+                  <span class="metric-value">{{ pct(row.spec_thresh_ppv) }}</span>
+                </div>
+                <div class="metric-block">
+                  <span class="metric-label">NPV</span>
+                  <span class="metric-value">{{ pct(row.spec_thresh_npv) }}</span>
+                </div>
+                <div class="metric-block">
+                  <span class="metric-label">Alert rate</span>
+                  <span class="metric-value">{{ pct(row.spec_thresh_alert_rate) }}</span>
+                </div>
+                <div class="metric-block">
+                  <span class="metric-label">Threshold</span>
+                  <span class="metric-value">{{ fmt3(row.spec_threshold) }}</span>
+                </div>
               </div>
-              <div class="metric-block">
-                <span class="metric-label">PPV</span>
-                <span class="metric-value">{{ pct(row.ppv) }}</span>
-              </div>
-              <div class="metric-block">
-                <span class="metric-label">NPV</span>
-                <span class="metric-value">{{ pct(row.npv) }}</span>
-              </div>
-              <div class="metric-block">
-                <span class="metric-label">Balanced accuracy</span>
-                <span class="metric-value">
-                  {{ pct(balancedAcc(row)) }}
-                </span>
-              </div>
-              <div class="metric-block">
-                <span class="metric-label">F1 score</span>
-                <span class="metric-value">
-                  {{ fmt3(f1Score(row)) }}
-                </span>
-              </div>
-              <div class="metric-block">
-                <span class="metric-label">Alert rate</span>
-                <span class="metric-value">{{ pct(row.alert_rate) }}</span>
-              </div>
-              <div class="metric-block">
-                <span class="metric-label">ECE</span>
-                <span class="metric-value">{{ fmt4(row.ece) }}</span>
-              </div>
-              <div class="metric-block">
-                <span class="metric-label">Sensitivity Threshold</span>
-                <span class="metric-value">{{ fmt3(row.threshold) }}</span>
-              </div>
-              <div class="metric-block">
-                <span class="metric-label">Specificity Threshold</span>
-                <span class="metric-value">{{ fmt3(row.spec_threshold) }}</span>
-              </div>
+
             </div>
-          </section>
           
-          <section class="card confusion-panel">
-            <h2 class="section-title">Class confusion matrix</h2>
+            <section class="card confusion-panel">
+              <h2 class="section-title">Class confusion matrix</h2>
 
-            <div id="class-confusion-d3-container"></div>
+              <div id="class-confusion-d3-container"></div>
+            </section>
           </section>
         }
 
