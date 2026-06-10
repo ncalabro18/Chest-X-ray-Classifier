@@ -13,3 +13,4 @@ albumentations
 timm
 prometheus_client
 prometheus_fastapi_instrumentator
+matplotlib
