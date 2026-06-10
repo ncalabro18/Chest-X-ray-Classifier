@@ -11,3 +11,5 @@ bash.exe.stackdump
 .env
 certs/
 
+save*
+
