@@ -194,10 +194,10 @@
           <div class="findings-colheaders">
             <span class="findings-colheader findings-colheader--name">Finding</span>
             <span class="findings-colheader findings-colheader--bar"></span>
-            <span class="findings-colheader findings-colheader--prob">Prob</span>
-            <span class="findings-colheader findings-colheader--thr">Thr</span>
-            <span class="findings-colheader findings-colheader--thr">Diff</span>
-
+            <span class="findings-colheader findings-colheader--prob">Score</span>
+            <span class="findings-colheader findings-colheader--thr">Sensitivity Threshold</span>
+            <!-- <span class="findings-colheader findings-colheader--thr">Diff</span> -->
+            <span class="findings-colheader findings-colheader--thr">Specificity Threshold</span>
             <span class="findings-colheader findings-colheader--badge"></span>
           </div>
 
@@ -237,6 +237,11 @@
                         [style.left]="thresholdLeft(entry[1].threshold)"
                         [attr.title]="'Threshold ' + pct(entry[1].threshold)"
                       ></div>
+                      <div
+                        class="threshold-marker threshold-marker--spec"
+                        [style.left]="thresholdLeft(entry[1].spec_threshold)"
+                        title="High confidence threshold"
+                      ></div>
                     </div>
                   </div>
 
@@ -245,9 +250,10 @@
 
                   <span
                     class="findingbadge"
-                    [class.findingbadge--normal]="entry[0] === 'No Finding'"
+                    [class.findingbadge--highconf]="isHighConfidence(entry[1])"
+                    [class.findingbadge--flagged]="!isHighConfidence(entry[1])"
                   >
-                    {{ pct(entry[1].probability - entry[1].threshold) }}
+                    {{ isHighConfidence(entry[1]) ? 'High confidence' : 'Possible' }}
                   </span>
 
                 </div>
@@ -284,7 +290,12 @@
                     <div
                       class="threshold-marker"
                       [style.left]="thresholdLeft(entry[1].threshold)"
-                      [attr.title]="'Threshold ' + pct(entry[1].threshold)"
+                      title="Sensitivity threshold"
+                    ></div>
+                    <div
+                      class="threshold-marker threshold-marker--spec"
+                      [style.left]="thresholdLeft(entry[1].spec_threshold)"
+                      title="High confidence threshold"
                     ></div>
                   </div>
                 </div>
@@ -372,8 +383,9 @@
             <p class="disclaimer">
 For research and investigational use only. Not FDA approved.
 This system is not intended to replace radiologist interpretation or 
-clinical decision-making. Thresholds are optimized for sensitivity and
-may produce increased false positive results.
+clinical decision-making. Thresholds are tuned for sensitivity to minimize missed findings (amber marker)
+and specificity for high-confidence flags (blue marker).
+Thresholds have statistical backing but aren't linearly interpretable
             </p>
           </div>
 

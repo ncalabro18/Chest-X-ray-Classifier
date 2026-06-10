@@ -21,6 +21,7 @@ export type ViewPosition = 'PA' | 'AP';
 export interface Prediction {
   probability: number;
   threshold: number;
+  spec_threshold: number;
   positive: boolean;
 }
 
@@ -57,6 +58,15 @@ export class SubmitComponent implements OnInit, OnDestroy {
 
   imagePreviewUrl = signal<string | null>(null);
 
+
+  highConfidenceFindings = computed(() =>
+    this.positiveFindings().filter(
+      ([, p]) => p.probability >= p.spec_threshold
+    )
+  );
+  isHighConfidence(p: Prediction): boolean {
+    return p.probability >= p.spec_threshold;
+  }
 
   // State
   errorMessage = signal<string | null>(null);

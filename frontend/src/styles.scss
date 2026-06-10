@@ -20,36 +20,36 @@
    font-weight: 300;
    -webkit-font-smoothing: antialiased;
 }
-/* Design tokens ONLY */
+/* Design tokens ONLY — optimized for clinical usability & professionalism, no red alerts */
 :root {
   /* Backgrounds & surfaces */
-  --c-bg: #dde8;              /* darker, cooler page background */
-  --c-surface: #ffffff;         /* main cards */
-  --c-surface-raised: #f1f4fb;  /* raised chips/cards */
+  --c-bg: #dde4f0;               /* darker, cooler page background */
+  --c-surface: #ffffff;          /* main cards */
+  --c-surface-raised: #f2f6fc;   /* raised chips/cards, slightly cooler */
 
-  /* Borders (stronger) */
-  --c-border: #b4bfd2;          /* main border */
-  --c-border-soft: #d4dbe7;     /* inner/soft border */
+  /* Borders (stronger, clinical clarity) */
+  --c-border: #a8b6d0;           /* main border, stronger contrast */
+  --c-border-soft: #d0d8e6;      /* inner/soft border */
 
-  /* Text */
-  --c-text: #0f172a;
-  --c-text-mid: #374151;
-  --c-text-dim: #6b7280;
+  /* Text — high contrast for readability */
+  --c-text: #0b1224;             /* primary text, very dark */
+  --c-text-mid: #344055;         /* secondary text */
+  --c-text-dim: #5a657a;         /* muted text (labels, metadata) */
 
-  /* Accent (primary) */
-  --c-accent: #155e9a;
-  --c-accent-mid: #1e6fb0;
-  --c-accent-tint: #d8e7fb;
+  /* Accent (primary) — professional clinical blue */
+  --c-accent: #145a92;           /* primary actions, links */
+  --c-accent-mid: #1d70b0;       /* hover / active */
+  --c-accent-tint: #d6e7f9;      /* subtle backgrounds, highlights */
 
-  /* Alert / error */
-  --c-flag: #b02024;
-  --c-flag-tint: #f8e3e4;
-  --c-flag-border: #dd9fa3;
+  /* Alert / error — amber (warning) instead of red */
+  --c-flag: #b85400;             /* warning text, non-critical alerts */
+  --c-flag-tint: #feefdf;        /* warning backgrounds */
+  --c-flag-border: #e6c8a3;      /* warning borders */
 
-  /* “Normal” / good */
-  --c-normal: #166534;
-  --c-normal-tint: #e0f3e8;
-  --c-normal-border: #8cc8a3;
+  /* "Normal" / good — clear success state */
+  --c-normal: #156030;           /* success text */
+  --c-normal-tint: #e9f7ef;      /* success backgrounds */
+  --c-normal-border: #8cc29a;    /* success borders */
 
   /* Typography & radii */
   --f-serif: 'Spectral', Georgia, 'Times New Roman', serif;
@@ -58,7 +58,4 @@
   --radius-sm: 3px;
   --radius-md: 5px;
   --radius-lg: 8px;
-
-  outline: 4px solid #ff00ff !important;
-
 }

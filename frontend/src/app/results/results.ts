@@ -93,7 +93,7 @@ export class ResultsComponent implements AfterViewInit {
   readonly selectedPriority = signal<PriorityMetric>('auc');
   readonly selectedClass = signal<string>(CLASS_ORDER[0]);
   readonly visibleGroups = signal<Set<string>>(
-    new Set(['discrimination', 'calibration', 'threshold', 'counts'])
+    new Set(['discrimination', 'calibration', 'threshold', 'spec_threshold', 'counts'])
   );
 
   readonly clinicalGroups = CLINICAL_GROUPS;

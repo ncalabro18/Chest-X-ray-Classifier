@@ -132,8 +132,12 @@
                 <span class="metric-value">{{ fmt4(row.ece) }}</span>
               </div>
               <div class="metric-block">
-                <span class="metric-label">Threshold</span>
+                <span class="metric-label">Sensitivity Threshold</span>
                 <span class="metric-value">{{ fmt3(row.threshold) }}</span>
+              </div>
+              <div class="metric-block">
+                <span class="metric-label">Specificity Threshold</span>
+                <span class="metric-value">{{ fmt3(row.spec_threshold) }}</span>
               </div>
             </div>
           </section>

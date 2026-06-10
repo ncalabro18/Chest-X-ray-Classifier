@@ -128,9 +128,11 @@ class PerEpochCSVWriter:
                 "tr_loss", "tr_auc", "tr_f1",
                 "val_loss", "val_auc", "val_f1",
                 "val_thresh_sens", "val_thresh_spec", "val_thresh_ppv",
-                "val_thresh_npv", "val_thresh_alert_rate"
+                "val_thresh_npv", "val_thresh_alert_rate",
+                "val_spec_thresh_sens", "val_spec_thresh_spec", "val_spec_thresh_ppv",  # NEW
+                "val_spec_thresh_npv", "val_spec_thresh_alert_rate",                    # NEW
             ] + [f"{c}_auc" for c in ALL_CLASSES] + [
-            f"{c}_thresh" for c in ALL_CLASSES
+                f"{c}_thresh" for c in ALL_CLASSES
             ])
 
     def write_epoch(
@@ -140,6 +142,8 @@ class PerEpochCSVWriter:
         val_loss, val_auc, val_f1,
         val_thresh_sens, val_thresh_spec, val_thresh_ppv,
         val_thresh_npv, val_thresh_alert_rate,
+        val_spec_thresh_sens, val_spec_thresh_spec, val_spec_thresh_ppv,  # NEW
+        val_spec_thresh_npv, val_spec_thresh_alert_rate,                   # NEW
         per_class_auc,
         best_thresh,
     ):
@@ -148,18 +152,18 @@ class PerEpochCSVWriter:
             tr_loss, tr_auc, tr_f1,
             val_loss, val_auc, val_f1,
             val_thresh_sens, val_thresh_spec, val_thresh_ppv,
-            val_thresh_npv, val_thresh_alert_rate
+            val_thresh_npv, val_thresh_alert_rate,
+            val_spec_thresh_sens, val_spec_thresh_spec, val_spec_thresh_ppv,  # NEW
+            val_spec_thresh_npv, val_spec_thresh_alert_rate,                   # NEW
         ]
         row += [per_class_auc.get(c, "") for c in ALL_CLASSES]
-        row += [float(
-            best_thresh[i]
-        ) if best_thresh[i] > 0 else 0.5 for i in range(NUM_CLASSES)]
+        row += [float(best_thresh[i]) if best_thresh[i] > 0 else 0.5 for i in range(NUM_CLASSES)]
         self._writer.writerow(row)
-        self.f.flush()
+        self._f.flush()
 
     def close(self):
-        if not self.f.closed:
-            self.f.close()
+        if not self._f.closed:
+            self._f.close()
 
     def __enter__(self):
         return self
@@ -176,9 +180,10 @@ class PerClassCSVWriter:
         self._writer = csv.writer(self._f)
         if write_header:
             self._writer.writerow([
-                "_writer",
+                "epoch",
                 "class",
                 "threshold",
+                "spec_threshold",
                 "auc",
                 "sens",
                 "spec",
@@ -190,6 +195,11 @@ class PerClassCSVWriter:
                 "fp",
                 "tn",
                 "fn",
+                "spec_thresh_sens",
+                "spec_thresh_spec", 
+                "spec_thresh_ppv",
+                "spec_thresh_npv",
+                "spec_thresh_alert_rate",
             ])
 
     def write_class_row(self, epoch, class_name, metrics, auc=None):
@@ -197,6 +207,7 @@ class PerClassCSVWriter:
             epoch,
             class_name,
             metrics.get("threshold", ""),
+            metrics.get("spec_threshold", ""),
             auc if auc is not None else metrics.get("auc", ""),
             metrics.get("sens", ""),
             metrics.get("spec", ""),
@@ -208,8 +219,13 @@ class PerClassCSVWriter:
             metrics.get("fp", ""),
             metrics.get("tn", ""),
             metrics.get("fn", ""),
+            metrics.get("spec_thresh_sens", ""),
+            metrics.get("spec_thresh_spec", ""),
+            metrics.get("spec_thresh_ppv", ""),
+            metrics.get("spec_thresh_npv", ""),
+            metrics.get("spec_thresh_alert_rate", "")
         ])
-        self.f.flush()
+        self._f.flush()
 
     def write_all(self, epoch, per_class_report, per_class_auc=None):
         per_class_auc = per_class_auc or {}
@@ -217,8 +233,8 @@ class PerClassCSVWriter:
             self.write_class_row(epoch, cls, metrics, per_class_auc.get(cls))
 
     def close(self):
-        if not self.f.closed:
-            self.f.close()
+        if not self._f.closed:
+            self._f.close()
 
     def __enter__(self):
         return self
@@ -262,30 +278,6 @@ def compute_model_metrics(labels, probs, best_thresh):
             f1s.append(f1)
     return aucs, per_class_auc, f1s, per_class_f1
 
-
-
-def compute_threshold_metrics(thresh_report):
-    macro_sens = []
-    macro_spec = []
-    macro_ppv = []
-    macro_npv = []
-    macro_alert = []
-    for cls in ALL_CLASSES:
-        if cls not in thresh_report:
-            continue
-        m = thresh_report[cls]
-        macro_sens.append(m["sens"])
-        macro_spec.append(m["spec"])
-        macro_ppv.append(m["ppv"])
-        macro_npv.append(m["npv"])
-        macro_alert.append(m["alert_rate"])
-    return {
-        "val_thresh_sens": float(np.mean(macro_sens)) if macro_sens else 0.0,
-        "val_thresh_spec": float(np.mean(macro_spec)) if macro_spec else 0.0,
-        "val_thresh_ppv": float(np.mean(macro_ppv)) if macro_ppv else 0.0,
-        "val_thresh_npv": float(np.mean(macro_npv)) if macro_npv else 0.0,
-        "val_thresh_alert_rate": float(np.mean(macro_alert)) if macro_alert else 0.0,
-    }
 
 
 

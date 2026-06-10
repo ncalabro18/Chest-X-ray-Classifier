@@ -5,6 +5,7 @@ export interface PerClassRow {
   epoch: number;
   class: string;
   threshold: number;
+  spec_threshold: number;
   auc: number;
   sens: number;
   spec: number;
@@ -67,6 +68,7 @@ export class CsvLoaderService {
             epoch: Number(r['epoch']),
             class: String(r['class']),
             threshold: Number(r['threshold']),
+            spec_threshold: Number(r['spec_threshold']),
             auc: Number(r['auc']),
             sens: Number(r['sens']),
             spec: Number(r['spec']),
@@ -78,6 +80,11 @@ export class CsvLoaderService {
             fp: Number(r['fp']),
             tn: Number(r['tn']),
             fn: Number(r['fn']),
+            spec_thresh_sens: Number(r['spec_thresh_sens']),
+            spec_thresh_spec: Number(r['spec_thresh_spec']),
+            spec_thresh_ppv: Number(r['spec_thresh_ppv']),
+            spec_thresh_npv: Number(r['spec_thresh_npv']),
+            spec_thresh_alert_rate: Number(r['spec_thresh_alert_rate'])
           }));
           resolve(rows);
         },
