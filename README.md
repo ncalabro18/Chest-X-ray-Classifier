@@ -4,14 +4,40 @@
 
 Multi-label chest X-ray classifier screening 14 thoracic diseases simultaneously, achieving 81.7% mean AUC on the NIH CXR8 dataset including data reserved for thresholds optimizing for sensitivity. Deployed as a secure microservice stack with defense-in-depth network isolation, it features image submission, attention and saliency map compared to the original image, sensitivity-optimized thresholds, an interactive results page to display model accuracy metrics, and Grafana for realtime metric monitoring.
 
+Currently experimenting with additional thresholding ideas to indicate confidence.
+
+Cardiomegaly - an enlarged heart
 ![Dashboard](assets/example_attention.png)
 
-I use FastAPI to handle a DMZ webserver. SlowAPI ratelimits requests for python services while [nginx](frontend/nginx.conf) rate-limits frontend requests. More details are in the [docker-compose file](docker-compose.yml). Cloudflared handles the direct ingress, which sends API requests to caddy. [Caddy](caddyfile) proxies the requests to the appropriate container address. https terminates at the cloudfared tunnel, caddy only accepts http.
+### Tech Stack
+ 
+ ##### Computer Vision
+ - _Orchestration:_ PyTorch
+ - _Model:_ Swin v2 with learned gates for each stages
+ - _Augmentation:_ Albumentations 
+ - _Backbobe:_ SimMIM pretrained on the NIH CXR8
 
-Prometheus and Grafana are utilized to display realtime metrics extracted from nginx, the classifier, and the web api service.
+ ##### Backend
+ - _Webserver:_ FastAPI
+ - _Limiter:_ SlowAPI
+ - _Proxy:_ Caddy
+ - _Tunnel:_ Cloudfare
+ - _Container:_ Docker
+ - _Orcchestration:_ docker-compose
+ - _Metric Collector:_ Prometheus
+ - _Metric Dashboard:_ Grafana
+
+ ##### Frontend
+ - _Frontend Server:_ Nginx
+ - _Frontend Framework:_ SlowAPI
 
 
 The model is optimized for clinical relevance, using sensitivity threshold optimization: the model is more sensitive to anomalies, resulting in higher false positives but fewer false negatives. False negatives result in the patient being sent home with a disease; thus, the decision was made to optimize thresholds to prevent this.
+
+### What's Next?
+
+ - I enforce consistency loss during training to force the model to make a hard decision, I found AUC improved from having this factor non-zeros
+ - Applying it at inference time may either help regularization or suppress close  findings
 
 
 ## Local Execution / Model Reproduction
@@ -45,12 +71,20 @@ The other 3 should be randomly initialized with a secure generator:
 openssl rand -base64 32
 ```
 
+#### Run Development Webapp
+
 ```bash
 make dev
 ```
 Is all that is needed. Navigate to http://localhost
 Local testing happens over http, not https.
 
+
+#### Run Production Webapp
+
+To deploy, edit the domain in caddyfile and create a cloudflare tunnel that points to http://caddy:80.
+
+To access grafana, manually start the service. Visit at ```http://localhost:3000```. If deployed, remove it when not in use for stronger security.
 
 There are three other profiles:
   - monitoring starts Grafana
@@ -62,12 +96,6 @@ make cve_scan
 make monitoring
 make lint
 ```
-
-
-To deploy, edit the domain in caddyfile and create a cloudflare tunnel that points to http://caddy:80.
-
-To access grafana, manually start the service. Visit at ```http://localhost:3000```. If deployed, remove it when not in use for stronger security.
-
 
 
 ### Training
@@ -144,7 +172,8 @@ Cross-attention then operates with num_classes learned query vectors against thi
 
 ### Thresholding
 
-After probabilities are calculated, final thresholds are applied to aid in diagnostic capabilities. These are selected to minimize false negatives, known as sensitivity optimization.
+After probability scores are calculated, final thresholds are applied to aid in diagnostic capabilities. These are selected to minimize false negatives, known as sensitivity optimization.
+
 
 ### Model Output
 
@@ -153,9 +182,7 @@ The model gives final probabilities which can be tuned to optimize for different
 Attention maps and saliency maps are generated to display the decision making areas with the hightest weights for each positive finding.
 
 
-
 ## Results
-
 
 Mean AUC of 81.5% on a patient-level held-out validation set, competitive with published benchmarks on this dataset. Thresholds are optimized for sensitivity rather than F1, prioritizing recall to minimize missed diagnoses.
 
@@ -163,6 +190,7 @@ Future efforts will focus on multi-image analysis, increasing generalization wit
 
 
 ## Dataset
+
 The NIH Chest X-ray Dataset contains 112,120 images of various resolutions
 It includes 14 disease categories with a large imbalance:
 ```
@@ -229,6 +257,7 @@ graph TB
     prometheus --> grafana
 ```
 
+
 ## Authors
 
 Nicholas Calabro
@@ -249,8 +278,6 @@ Extended Final Project for a Computer Science Special Topics Elective: _Computin
 [Professor Wenjin's Course Page](https://www.cs.uml.edu/~wzhou/comp5300.html)
 
 
-
-
 ## References
 
 ### NIH Chest X-ray Dataset
@@ -264,3 +291,10 @@ Liu, Z., Hu, H., Lin, Y., Yao, Z., Xie, Z., Wei, Y., Ning, J., Cao, Y., Zhang, Z
 *Swin Transformer V2: Scaling Up Capacity and Resolution.*  
 Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR).  
 https://doi.org/10.1109/CVPR52688.2022.01167
+
+### Enlarged Heart (Cardiomegaly): What It Is, Symptoms & Treatment
+
+Cleveland Clinic. (2022, July 10).  
+*Enlarged Heart (Cardiomegaly): What It Is, Symptoms & Treatment.*  
+Cleveland Clinic.  
+https://my.clevelandclinic.org/health/diseases/21490-enlarged-heart-cardiomegaly
