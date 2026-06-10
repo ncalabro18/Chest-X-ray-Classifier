@@ -6,7 +6,10 @@
 import cv2
 
 
+import numpy as np
 from torch.utils.data import DataLoader, WeightedRandomSampler
+
+from classes import ALL_CLASSES
 
 
 ### Data Loader Parameters ###
@@ -25,7 +28,13 @@ PERSISTENT_WORKERS   = True
 BASE_BATCH_SIZE  = 16
 
 # Sample extra from low appearing catagories
-SAMPLER_POWER = 0.17
+SAMPLER_POWER = 0.07
+PER_CLASS_SAMPLER_POWER = {
+    'Hernia':    0.5,   # 184 train positives - most rare, boost hardest
+    'Fibrosis':  0.4,  # next rarest tier
+    'Mass':      0.2,
+    # Removing; dont sample noisy classes 'Nodule':    0.25, 
+}
 
 # Worker Init; keep for memory safety
 def worker_init_fn(worker_id):
@@ -34,16 +43,24 @@ def worker_init_fn(worker_id):
 
 
 def init_train_dataloader(train_ds, train_idx, label_matrix):
-    
-    # Sampler
     class_counts = label_matrix[train_idx].sum(axis=0)
-    class_weights = 1.0 / (class_counts + 1e-6) ** SAMPLER_POWER
+
+    # Build per-class power array
+    powers = np.full(len(ALL_CLASSES), SAMPLER_POWER)
+    for cls, power in PER_CLASS_SAMPLER_POWER.items():
+        if cls in ALL_CLASSES:
+            powers[ALL_CLASSES.index(cls)] = power
+
+    # Apply per-class power independently
+    class_weights = 1.0 / (class_counts + 1e-6) ** powers
     sample_weights = (label_matrix[train_idx] * class_weights).sum(axis=1)
+
     sampler = WeightedRandomSampler(
         weights=sample_weights,
         num_samples=len(sample_weights),
         replacement=True,
     )
+
 
     return DataLoader(
         train_ds,
@@ -88,3 +105,4 @@ def print_dataloader_parameters():
     print("  PREFETECH_FACTOR", PREFETECH_FACTOR)
     print("  PERSISTENT_WORKERS", PERSISTENT_WORKERS)
     print("  SAMPLER_POWER", SAMPLER_POWER)
+    print("  PER_CLASS_SAMPLER_POWER", PER_CLASS_SAMPLER_POWER)

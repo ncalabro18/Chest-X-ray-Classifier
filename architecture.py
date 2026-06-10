@@ -22,7 +22,7 @@ import cv2
 import numpy as np
 
 
-from classes import NUM_CLASSES
+from classes import ALL_CLASSES, NUM_CLASSES
 from dataloader import BATCH_SIZE_TRAIN
 from swin_transformer_v2 import SwinTransformerV2
 from util import init_backbone
@@ -34,8 +34,8 @@ from util import init_backbone
 IMAGE_SIZE = 384
 SWIN_WINDOW_SIZE = 12
 
-FEATURE_DROPOUT    = 0.2
-CLASSIFIER_DROPOUT = 0.1
+FEATURE_DROPOUT    = 0.35
+CLASSIFIER_DROPOUT = 0.15
 
 
 # Learning Rates
@@ -44,60 +44,87 @@ BASE_LR = 6e-5
 # Multiply the BASE_LR to compensate
 
 LR_LAYER_DECAY = 0.8
-WEIGHT_DECAY = 0.08
+WEIGHT_DECAY = 0.06
 
 
-HEAD_LR_MULTIPLIER = 4
+HEAD_LR_MULTIPLIER = 2.7
 
 
-STAGE_GATES_MULTIPLIER = 18.0
+STAGE_GATES_MULTIPLIER = 1.0 
 
 VIEW_POSITION_SCALE = 0.2
 
 
 # high decay prevents noise from destabilizing training
 # may underfit if too high
-EMA_DECAY = 0.9992
-
+# EMA_DECAY = 0.9992
+EMA_DECAY = 0.9985
 
 ### Asymmetric Loss ###
 # pos should stay > 0.5
 ASYMMETRIC_GAMMA_POS = 1.0
-ASYMMETRIC_GAMMA_NEG = 5.0
-ASYMMETRIC_CLIP      = 0.1
+ASYMMETRIC_GAMMA_NEG = 3.5
+ASYMMETRIC_CLIP      = 0.03
 
 ASYMMETRIC_LABEL_SMOOTH = 0.05
 
+# may increase auc if increased; went down when @ 0
 CONSISTENCY_LOSS_WEIGHT = 0.02
 
 ### Scheduler Parameters ###
 
 # column 1: epoch to unfreeze at
 # column 2: layer index to unfreeze
+# UNFREEZE_SCHEDULE = {
+#     1: 3,
+#     3: 2,
+#     5: 1,
+#     8: 0
+# }
 UNFREEZE_SCHEDULE = {
-    2:  3,   # was 5 - bring backbone in before head overfits
-    4:  2,
-    7: 1,
-    10: 0,
+    2: 3,
+    4: 2,
+    6: 1,
+    8: 0
 }
-UNFREEZE_WARMUP_EPOCHS = 3
+UNFREEZE_WARMUP_EPOCHS = 2
 
 # Initial warmup factor for newly unfrozen layers,
 # relative to their base_lr
-UNFREEZE_WARMUP_FACTOR = 0.1
+UNFREEZE_WARMUP_FACTOR = 0.23
 # Bump LR for unfrozen layers by the end of its warmup
 # Highly dependant on schedule timing
-UNFREEZE_BUMP_FACTOR = 1.2
+UNFREEZE_BUMP_FACTOR = 1.0
 
-HEAD_WARMUP_EPOCHS      = 3
+HEAD_WARMUP_EPOCHS      = 2
 HEAD_WARMUP_START_FACTOR = 0.3
 
 # SWA - starts after final unfreeze warmup completes (epoch 20 + 4 warmup)
-SWA_START_EPOCH = 25
-SWA_LR          = 2e-5   # flat LR during SWA, below cosine floor
+SWA_START_EPOCH = 14
+SWA_LR          = 8e-6   # flat LR during SWA, below cosine floor
 
 # Relative to each group's base_lr, not global eta_min
-ETA_MIN_RATIO = 0.18
+ETA_MIN_RATIO = 0.05
+
+
+# label smoooth is increased for these disease classes
+NOISY_CLASSES = ['Infiltration', 'Nodule', 'Pleural_Thickening']
+PER_CLASS_GAMMA_NEG = {
+    'Infiltration':       1.5,   # noisy - soften neg suppression
+    'Nodule':             1.0,   # noisy + hard - slight softening
+    'Pleural_Thickening': 2.0,
+    'Fibrosis':          3.0,
+}
+PER_CLASS_GAMMA_POS = {
+    # "Infiltration": 0.75,
+    # "Nodule": 0.9,
+    # "Pleural_Thickening": 0.9,
+}
+PER_CLASS_CLIP = {
+    'Infiltration':       0.015,  # noisy - less clipping to match softer gamma_neg
+    'Nodule':             0.02,
+    'Pleural_Thickening': 0.02,
+}
 
 ### End Tune Parameters  ###
 
@@ -140,9 +167,8 @@ class SwinWithView(torch.nn.Module):
         ) for d in stage_dims[:-1]])
 
         self.stage_gates = nn.Parameter(
-            torch.empty(len(stage_dims)-1
-        ).uniform_(-3.0, 3.0))
-
+            torch.zeros(len(stage_dims)-1).uniform_(-0.1, 0.1)
+        )
 
         self.class_queries = nn.Parameter(torch.randn(num_classes, C) * 0.02)
         self.attn_scale = C ** -0.5
@@ -266,17 +292,32 @@ class AsymmetricLoss(nn.Module):
         probs = torch.sigmoid(logits)
 
         # Clip negative probabilities
-        if self.clip > 0:
-            probs_neg = (1 - probs - self.clip).clamp(min=0)
+        clip = self.clip
+        if isinstance(clip, torch.Tensor):
+            clip = clip.to(logits.device)
+        if (clip if isinstance(clip, float) else clip.max().item()) > 0:
+            probs_neg = (1 - probs - clip).clamp(min=0)
         else:
             probs_neg = 1 - probs
 
+        # gamma_pos / gamma_neg may be scalar or (C,) tensor
+        gp = self.gamma_pos
+        gn = self.gamma_neg
+        if isinstance(gp, torch.Tensor):
+            gp = gp.to(logits.device)
+        if isinstance(gn, torch.Tensor):
+            gn = gn.to(logits.device)
         # Asymmetric focusing
-        pos_focal = (1 - probs) ** self.gamma_pos
-        neg_focal = probs ** self.gamma_neg
+        pos_focal = (1 - probs) ** gp
+        neg_focal = probs ** gn
 
-        if self.label_smooth > 0:
-                    targets = targets * (1 - self.label_smooth) + 0.5 * self.label_smooth
+        if self.label_smooth is not None:
+            # label_smooth can be scalar or (num_classes,) tensor
+            smooth = self.label_smooth
+            if isinstance(smooth, torch.Tensor):
+                smooth = smooth.to(targets.device)
+            targets = targets * (1 - smooth) + 0.5 * smooth
+
 
         # Loss
         loss_pos = targets * torch.log(probs.clamp(min=self.eps)) * pos_focal
@@ -372,14 +413,35 @@ class MultiClassifier:
             device=self.device,
         )
 
+        # Per-class label smooth, gamma_pos, and gamma_neg
+        label_smooth = torch.full((NUM_CLASSES,), ASYMMETRIC_LABEL_SMOOTH)
+        for cls in NOISY_CLASSES:
+            if cls in ALL_CLASSES:
+                label_smooth[ALL_CLASSES.index(cls)] = 0.10
+
+        gamma_neg = torch.full((NUM_CLASSES,), float(ASYMMETRIC_GAMMA_NEG))
+        gamma_pos = torch.full((NUM_CLASSES,), float(ASYMMETRIC_GAMMA_POS))
+        for cls, val in PER_CLASS_GAMMA_NEG.items():
+            if cls in ALL_CLASSES:
+                gamma_neg[ALL_CLASSES.index(cls)] = val
+        for cls, val in PER_CLASS_GAMMA_POS.items():
+            if cls in ALL_CLASSES:
+                gamma_pos[ALL_CLASSES.index(cls)] = val
+        
+        # Per-class AS clip
+        clip = torch.full((NUM_CLASSES,), float(ASYMMETRIC_CLIP))
+        for cls, val in PER_CLASS_CLIP.items():
+            if cls in ALL_CLASSES:
+                clip[ALL_CLASSES.index(cls)] = val
+
         return AsymmetricLoss(
-            gamma_pos=ASYMMETRIC_GAMMA_POS,
-            gamma_neg=ASYMMETRIC_GAMMA_NEG,
-            clip=ASYMMETRIC_CLIP,
-            label_smooth=ASYMMETRIC_LABEL_SMOOTH,
+            gamma_pos=gamma_pos,
+            gamma_neg=gamma_neg,
+            clip=clip,
+            label_smooth=label_smooth,
             weight=class_loss_weights,
         )
-    
+            
 
     def load_best_checkpoint(self, path: str) -> dict:
         ckpt = torch.load(path, map_location=self.device, weights_only=False)
@@ -405,6 +467,17 @@ class MultiClassifier:
             print("WARNING: no thresholds in checkpoint; defaulting to 0.5")
             return np.full(NUM_CLASSES, 0.5, dtype=np.float32)
         return np.array(raw, dtype=np.float32)
+    
+    def load_spec_thresholds(self, path: str) -> np.ndarray:
+        if not os.path.exists(path):
+            raise FileNotFoundError(f"No checkpoint found at {path}")
+
+        ckpt = torch.load(path, map_location=self.device, weights_only=False)
+        raw = ckpt.get("spec_thresholds")
+        if raw is None:
+            print("WARNING: no spec_thresholds in checkpoint; defaulting to 0.5")
+            return np.full(NUM_CLASSES, 0.5, dtype=np.float32)
+        return np.array(raw, dtype=np.float32)
 
     def view_scale(self) -> float:
         return torch.sigmoid(self.ema_model.module.view_scale).item() * 2.0
@@ -415,6 +488,14 @@ class MultiClassifier:
         self.temperature_scaler = scaler
         return scaler
     
+    def print_LRs(self):
+        head_lr = next(
+            g["lr"] for g in self.optimizer.param_groups if g.get(
+                "layer_idx") == -1)
+        layer0_lr = next(
+            g["lr"] for g in self.optimizer.param_groups if g.get(
+                "layer_idx") == 0)
+        print(f"  head_lr={head_lr:.2e}  layer0_lr={layer0_lr:.2e}")
 
 class PerClassTemperatureScaler(nn.Module):
     def __init__(self, num_classes):
@@ -454,7 +535,7 @@ class Scheduler:
                 self.in_swa = True
 
         elif epoch <= HEAD_WARMUP_EPOCHS:
-            # Warm up head only — backbone is frozen so its LR doesn't matter yet
+            # Warm up head only - backbone is frozen so its LR doesn't matter yet
             factor = HEAD_WARMUP_START_FACTOR + (
                 1.0 - HEAD_WARMUP_START_FACTOR
             ) * (epoch / HEAD_WARMUP_EPOCHS)
@@ -467,7 +548,9 @@ class Scheduler:
                 group["lr"] = init_group_cosine(
                     group, epoch, self.max_epochs, ETA_MIN_RATIO, warmup_epochs=0
                 )
-            self.unfreeze_scheduler.apply_scales()
+        
+        
+        self.unfreeze_scheduler.apply_scales()
 
 
     def min_stop_epoch(self):
@@ -634,7 +717,6 @@ def tta_predict(model, imgs, views):
     Returns averaged probabilities.
     """
 
-    # assumes you already have this implemented
     clahe_imgs = apply_clahe(imgs.clone())
 
     aug_batches = [
@@ -718,8 +800,11 @@ def init_param_groups(model, base_lr=1e-4, decay=0.8):
     add(model.class_norm.parameters(),  base_lr * HEAD_LR_MULTIPLIER, layer_idx=-1, weight_decay=0.08)
     add(model.view_embed.parameters(), base_lr, -1)
     add(model.view_mlp.parameters(), base_lr, -1)
-    add([model.class_queries, model.view_scale, model.stage_temps],
+    
+    add([model.view_scale, model.stage_temps],
             base_lr * HEAD_LR_MULTIPLIER, layer_idx=-1)
+    add([model.class_queries], base_lr * HEAD_LR_MULTIPLIER, 
+            layer_idx=-1, weight_decay=0.15)
 
 
     leftovers = [p for p in model.parameters() if id(p) not in seen]
@@ -755,3 +840,9 @@ def print_architecture_parameters():
     print("  SWA_START_EPOCH", SWA_START_EPOCH)
     print("  SWA_LR", SWA_LR)
     print("  ETA_MIN_RATIO", ETA_MIN_RATIO)
+    print("  NOISY_CLASSES", NOISY_CLASSES)
+    print("  PER_CLASS_GAMMA_NEG", PER_CLASS_GAMMA_NEG)
+    print("  PER_CLASS_GAMMA_POS", PER_CLASS_GAMMA_POS)
+    print("  PER_CLASS_CLIP", PER_CLASS_CLIP)
+
+

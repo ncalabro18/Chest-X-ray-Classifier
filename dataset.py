@@ -151,7 +151,7 @@ class CXR8Dataset(Dataset):
         return img, lbl, view_id
 
 
-# Split at patient level so value set doesn't see patients from training set
+# Split at patient level so val set doesn't see patients from training set
 def init_split(df, label_matrix):
     patient_ids = df["Patient ID"].unique()
 

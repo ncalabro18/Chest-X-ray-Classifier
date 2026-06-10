@@ -25,6 +25,8 @@ import glob
 import math
 import os
 
+import cv2
+import numpy as np
 import torch
 import torch.distributed as dist
 import torch.nn as nn
@@ -35,9 +37,76 @@ from torch.utils.data import DataLoader, Dataset, DistributedSampler
 from torchvision import transforms
 from tqdm import tqdm
 
-from dataset import CLAHE_CLIP_LIMIT, CLAHE_TILE_GRID_SIZE, CLAHETransform, PerImageStandardize
+from dataset import CLAHE_CLIP_LIMIT, CLAHE_TILE_GRID_SIZE, PerImageStandardize
 from swin_transformer_v2 import SwinTransformerV2
 
+import cv2
+import numpy as np
+import torch
+
+
+class CLAHETransform:
+    """
+    Apply CLAHE to a grayscale chest X-ray tensor and replicate
+    the result back to 3 channels.
+
+    Expected input:
+        Tensor (3, H, W) in [0, 1] after ToTensor()
+
+    Returns:
+        Tensor (3, H, W) in [0, 1]
+    """
+
+    def __init__(
+        self,
+        clip_limit: float = 2.0,
+        tile_grid_size: tuple[int, int] = (8, 8),
+    ):
+        self.clip_limit = clip_limit
+        self.tile_grid_size = tile_grid_size
+        self._clahe = None
+
+    def _get_clahe(self):
+        if self._clahe is None:
+            self._clahe = cv2.createCLAHE(
+                clipLimit=self.clip_limit,
+                tileGridSize=self.tile_grid_size,
+            )
+        return self._clahe
+
+    def __call__(self, img: torch.Tensor) -> torch.Tensor:
+        if not isinstance(img, torch.Tensor):
+            raise TypeError(
+                f"Expected torch.Tensor, got {type(img)}"
+            )
+
+        if img.ndim != 3:
+            raise ValueError(
+                f"Expected (C,H,W) tensor, got shape {img.shape}"
+            )
+
+        # Chest X-rays are grayscale; after convert("RGB")
+        # all channels contain the same information.
+        gray = img[0].cpu().numpy()
+
+        gray = np.clip(gray * 255.0, 0, 255).astype(np.uint8)
+
+        clahe = self._get_clahe()
+        gray = clahe.apply(gray)
+
+        gray = torch.from_numpy(
+            gray.astype(np.float32) / 255.0
+        )
+
+        # Replicate back to RGB for SwinV2
+        return gray.unsqueeze(0).repeat(3, 1, 1)
+
+    def __repr__(self):
+        return (
+            f"{self.__class__.__name__}("
+            f"clip_limit={self.clip_limit}, "
+            f"tile_grid_size={self.tile_grid_size})"
+        )
 
 # Paths
 IMAGE_ROOT  = "../chest_xray_dataset/CXR8/images_preprocessed"
@@ -45,13 +114,13 @@ OUTPUT_CKPT = "../chest_xray_dataset/simmim_swinv2_cxr_backbone.pth"
 RESUME_CKPT = None   # set to a full checkpoint path to resume training
 
 # Architecture (must match train.py)
-IMG_SIZE    = 256
+IMG_SIZE    = 384
 PATCH_SIZE  = 4
 IN_CHANS    = 3
 EMBED_DIM   = 96
 DEPTHS      = [2, 2, 18, 2]
 NUM_HEADS   = [3, 6, 12, 24]
-WINDOW_SIZE = 8
+WINDOW_SIZE = 12
 
 # Pretraining
 MASK_RATIO   = 0.60
@@ -61,7 +130,7 @@ DECODER_DIM  = 256   # internal channel width of FPN decoder
 BATCH_SIZE   = 64
 ACCUM_STEPS  = 4     # increase to further multiply effective batch
 
-# Square-root scaling from reference (1e-4 @ bs=32 → 2e-4 @ bs=256)
+# Square-root scaling from reference (1e-4 @ bs=32 -> 2e-4 @ bs=256)
 BASE_LR        = 2e-4
 WEIGHT_DECAY   = 0.05
 WARMUP_EPOCHS  = 10
@@ -82,7 +151,7 @@ class CXRPretrainDataset(Dataset):
       - Horizontal flip only  (left-right symmetry is valid for CXRs)
       - Small rotation        (±10°)
       - No vertical flip      (anatomically wrong)
-      - No color jitter       (images are converted to grayscale→RGB)
+      - No color jitter       (images are converted to grayscale->RGB)
     """
     def __init__(self, root: str, img_size: int = 256):
         self.paths = sorted(
@@ -126,7 +195,7 @@ class FPNDecoder(nn.Module):
         16×16  upsample 2× + fuse stage[1]
         32×32  upsample 2× + fuse stage[0]
         64×64  upsample 2× + refine
-        head → (in_chans × patch_size², 64, 64)
+        head -> (in_chans × patch_size², 64, 64)
 
     Each lateral branch has its own LayerNorm so intermediate encoder features
     (which lack a backbone norm) are normalized before projection.
@@ -207,7 +276,7 @@ class SimMIM_SwinV2(nn.Module):
 
     Decoder
         FPN with skip connections from all 4 encoder stages.  The original bilinear
-        8×→64× upsample discards three quarters of the spatial hierarchy.
+        8×->64× upsample discards three quarters of the spatial hierarchy.
     """
 
     def __init__(
@@ -303,7 +372,7 @@ class SimMIM_SwinV2(nn.Module):
         # Masked encoding — collect all stage feature maps
         stage_feats = self._encode(imgs, mask)
 
-        # FPN decode → predicted pixel content
+        # FPN decode -> predicted pixel content
         pred_map = self.decoder(stage_feats)                    # (B, P, 64, 64)
         pred     = pred_map.flatten(2).transpose(1, 2)          # (B, L, P)
 
@@ -531,12 +600,12 @@ def main():
             bk_path   = f"simmim_backbone_epoch{epoch + 1:03d}.pth"
             save_full_ckpt(full_path, epoch, model, optimizer, scaler, best_loss)
             save_backbone_ckpt(bk_path, model)
-            print(f"  → saved {full_path}  +  {bk_path}")
+            print(f"  -> saved {full_path}  +  {bk_path}")
 
     # Final backbone save 
     if is_main:
         save_backbone_ckpt(OUTPUT_CKPT, model)
-        print(f"\nDone. Backbone checkpoint → {OUTPUT_CKPT}")
+        print(f"\nDone. Backbone checkpoint -> {OUTPUT_CKPT}")
         print(f"Best observed loss: {best_loss:.4f}")
 
     if ddp:

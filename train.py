@@ -69,9 +69,9 @@ from architecture import (
     print_architecture_parameters, tta_predict,
 )
 
-from thresholding import fit_thresholds
+from thresholding import fit_thresholds, compute_threshold_metrics
 from util import (
-    compute_model_metrics, compute_threshold_metrics, init_device, init_metadata,
+    compute_model_metrics, init_device, init_metadata,
     print_util_parameters,
     PerClassCSVWriter, PerEpochCSVWriter
 )
@@ -263,7 +263,11 @@ def main():
                         disease_mask[NO_FINDING_COL] = False
                         disease_probs = probs[:, disease_mask]
                         consistency_loss = (nf_prob.unsqueeze(1) * disease_probs).mean()
-                        loss = loss + CONSISTENCY_LOSS_WEIGHT * consistency_loss
+                        # Gate entropy regularization - keeps early stages from being gated out
+                        gate_probs = torch.sigmoid(classifier.raw_model.stage_gates.float())
+                        gate_entropy = -(gate_probs * torch.log(gate_probs + 1e-8) + 
+                                        (1 - gate_probs) * torch.log(1 - gate_probs + 1e-8))
+                        loss = loss + CONSISTENCY_LOSS_WEIGHT * consistency_loss - 0.005 * gate_entropy.mean()
 
                 # Backward pass outside autocast
                 if train:
@@ -379,20 +383,32 @@ def main():
             print(f"    {cls:<20s} {auc:.3f}")
 
 
+        best_thresh, spec_thresh, _, _, thresh_report = fit_thresholds(
+            classifier.ema_model.module,
+            thresh_loader,
+            device
+        )
+
         thresh_metrics = compute_threshold_metrics(thresh_report)
         val_thresh_sens       = thresh_metrics["val_thresh_sens"]
         val_thresh_spec       = thresh_metrics["val_thresh_spec"]
         val_thresh_ppv        = thresh_metrics["val_thresh_ppv"]
         val_thresh_npv        = thresh_metrics["val_thresh_npv"]
         val_thresh_alert_rate = thresh_metrics["val_thresh_alert_rate"]
+        val_spec_thresh_sens  = thresh_metrics["val_spec_thresh_sens"]
+        val_spec_thresh_spec  = thresh_metrics["val_spec_thresh_spec"]
+        val_spec_thresh_ppv   = thresh_metrics["val_spec_thresh_ppv"]
+        val_spec_thresh_npv   = thresh_metrics["val_spec_thresh_npv"]
+        val_spec_thresh_alert_rate = thresh_metrics["val_spec_thresh_alert_rate"]
 
-        # Write CSV row for each file
         epoch_logger.write_epoch(
             epoch,
             tr_loss, tr_auc, tr_f1,
             val_loss, val_auc, val_f1,
             val_thresh_sens, val_thresh_spec, val_thresh_ppv,
             val_thresh_npv, val_thresh_alert_rate,
+            val_spec_thresh_sens, val_spec_thresh_spec, val_spec_thresh_ppv,
+            val_spec_thresh_npv, val_spec_thresh_alert_rate,
             per_class,
             best_thresh,
         )
@@ -414,11 +430,6 @@ def main():
             best_val = val_auc
             no_improve = 0
 
-            best_thresh, _, _, thresh_report = fit_thresholds(
-                classifier.ema_model.module,
-                thresh_loader,
-                device
-            )
 
             temperature_scaler = classifier.fit_and_attach_temperature(
                 value_loader, NUM_CLASSES
@@ -426,6 +437,7 @@ def main():
             ckpt_file.save(
                 classifier=classifier,
                 thresholds=best_thresh,
+                spec_thresholds=spec_thresh,
                 temperature_scaler=temperature_scaler
             )
 
@@ -475,8 +487,9 @@ def main():
 
         ckpt_file.save_final(
             scheduler.swa_model.module.state_dict(),
-            best_thresh,
-            classifier.temperature_scaler
+            best_thresh=best_thresh,
+            spec_thresholds=spec_thresh,
+            temperature_scaler=classifier.temperature_scaler
         )
         print(f"Temperature saved: {temperature_scaler.temps.mean().item():.4f}")
     else:

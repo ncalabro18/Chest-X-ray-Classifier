@@ -1,17 +1,41 @@
-# --------------------------------------------------------
 # Swin Transformer V2
 # Copyright (c) 2022 Microsoft
 # Licensed under The MIT License [see LICENSE for details]
 # Written by Ze Liu
 # Modified by Nicholas J. Calabro (2026):
-# - Added PyTorch scaled dot-product attention support
-# - Added optimized SDPA attention path for CUDA devices
+# - Added PyTorch scaled dot-product attention (SDPA) support,
+#       replacing the manual attention computation with
+#       torch.nn.functional.scaled_dot_product_attention for
+#       improved memory efficiency and throughput on CUDA devices
+
+# - Added optimized SDPA attention path for CUDA devices,
+#       falling back to the original manual attention path
+#       on CPU or when SDPA is unavailable
+
 # - Added gated attention pooling classification head
-# - Added learnable temperature-scaled token attention
+#       (AttentionPoolingHead), replacing the standard linear
+#       head with a dual-gate mechanism (tanh + sigmoid) that
+#       produces a weighted token pool, allowing the model to
+#       selectively attend to diagnostically relevant image
+#       regions rather than averaging all patch tokens equally
+
+# - Added learnable temperature-scaled token attention,
+#       allowing the model to control the sharpness of the
+#       attention distribution over tokens; lower temperatures
+#       produce more peaked (selective) attention, higher
+#       temperatures produce more uniform pooling
+
 # - Added attention map extraction utilities
-# - Modified architecture for chest X-ray classification
-# - Added grayscale medical imaging support
-# --------------------------------------------------------
+#       (forward_with_attention) for visualization of which
+#       image regions the model attends to at inference time
+
+# - Modified architecture for chest X-ray classification,
+#       replacing the ImageNet classification head and adapting
+#       the forward pass for multi-label pathology prediction
+
+# - Added grayscale medical imaging support by accepting
+#       single-channel input replicated across 3 channels,
+#       compatible with NIH ChestX-ray14 preprocessed images
 
 import torch
 import torch.nn as nn

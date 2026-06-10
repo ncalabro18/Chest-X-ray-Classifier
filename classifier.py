@@ -72,7 +72,7 @@ INFERENCE_LATENCY = Histogram(
     buckets=[0.1, 0.25, 0.5, 1.0, 2.0, 5.0, 10.0, 30.0],
 )
 MAP_GENERATION_LATENCY = Histogram(
-       'classifier_map_generation_seconds',
+    'classifier_map_generation_seconds',
     'Model inference wall-clock time',
     buckets=[0.1, 0.25, 0.5, 1.0, 2.0, 5.0, 10.0, 30.0],
 )
@@ -177,7 +177,6 @@ async def classify_image(
 ):
     
     print("Classifying a ", view, " image.")
-    print("  filename = ", image.filename)
     print("  size = ", image.size)
     print("  content_type = ", image.content_type)
     view = view.strip().upper()
@@ -204,6 +203,8 @@ async def classify_image(
     model      = state["model"]
     scaler     = state["scaler"]
     thresholds = state["thresholds"]
+    spec_thresholds = state["spec_thresholds"]
+
 
     try:
         pre_inference_time = time.perf_counter()
@@ -221,6 +222,7 @@ async def classify_image(
             cls_name: {
                 "probability": round(float(probs_np[c]), 4),
                 "threshold":   round(float(thresholds[c]), 4),
+                "spec_threshold":   round(float(spec_thresholds[c]), 4),
                 "positive":    bool(probs_np[c] >= thresholds[c]),
             }
             for c, cls_name in enumerate(ALL_CLASSES)
@@ -286,6 +288,8 @@ def load_model():
     inference_model.eval()
     state["model"]      = inference_model
     state["thresholds"] = classifier.load_thresholds(MODEL_OUTPUT_FILE)
+    state["spec_thresholds"] = classifier.load_spec_thresholds(MODEL_OUTPUT_FILE)
+
 
     if classifier.temperature_scaler is not None:
         state["scaler"] = classifier.temperature_scaler

@@ -28,21 +28,24 @@ class CheckpointFile:
             "no_improve": no_improve,
         }, path)
 
-    def save(self, classifier, thresholds, temperature_scaler):
+    def save(self, classifier, thresholds, spec_thresholds, temperature_scaler):
         torch.save({
             "model":       classifier.ema_model.module.state_dict(),
             "thresholds":  thresholds.tolist(),
+            "spec_thresholds": spec_thresholds.tolist(),
             "temperature": temperature_scaler.temps.detach().cpu().tolist(),
         }, self.best_path)
 
-    def save_final(self, model_state: dict, thresholds, temperature_scaler):
+    def save_final(self, model_state: dict, thresholds, spec_thresholds, temperature_scaler):
         # Overwrite best checkpoint with fitted temperature after training completes.
         existing = self.load_best() if os.path.exists(self.best_path) else {}
         existing.update({
             "model": model_state,
             "thresholds": thresholds.tolist(),
+            "spec_thresholds": spec_thresholds.tolist(),
             "temperature": temperature_scaler.temps.detach().cpu().tolist(),
         })
+        
         torch.save(existing, self.best_path)
         print(
             "  Final checkpoint saved with temperature: ",
