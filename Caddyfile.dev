@@ -1,5 +1,5 @@
 
-:80 {
+:14000 {
 	encode gzip zstd
 
 	handle /metrics {

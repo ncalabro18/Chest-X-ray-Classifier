@@ -341,7 +341,7 @@ services:
 
     # use ports on caddy-dev
     ports:
-      - "127.0.0.1:14000:80"
+      - "127.0.0.1:14000:14000"
 
     networks:
       - ingress-dev
