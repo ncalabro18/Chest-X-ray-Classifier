@@ -9,48 +9,23 @@ Currently experimenting with additional thresholding ideas to indicate confidenc
 Cardiomegaly - an enlarged heart
 ![Dashboard](assets/example_attention.png)
 
-### Tech Stack
- 
- ##### Computer Vision
- - _Orchestration:_ PyTorch
- - _Model:_ Swin v2 with learned gates for each stages
- - _Augmentation:_ Albumentations 
- - _Backbobe:_ SimMIM pretrained on the NIH CXR8
-
- ##### Backend
- - _Webserver:_ FastAPI
- - _Limiter:_ SlowAPI
- - _Proxy:_ Caddy
- - _Tunnel:_ Cloudfare
- - _Container:_ Docker
- - _Orcchestration:_ docker-compose
- - _Metric Collector:_ Prometheus
- - _Metric Dashboard:_ Grafana
-
- ##### Frontend
- - _Frontend Server:_ Nginx
- - _Frontend Framework:_ SlowAPI
-
 
 The model is optimized for clinical relevance, using sensitivity threshold optimization: the model is more sensitive to anomalies, resulting in higher false positives but fewer false negatives. False negatives result in the patient being sent home with a disease; thus, the decision was made to optimize thresholds to prevent this.
 
-### What's Next?
+The latest feature includes an addition threshold used to indicate high confidence.
 
- - I enforce consistency loss during training to force the model to make a hard decision, I found AUC improved from having this factor non-zeros
- - Applying it at inference time may either help regularization or suppress close  findings
+<br>
 
+## Local Execution
 
-## Local Execution / Model Reproduction
-
-### Classifier Web Server
+Clone the repository.
 
 ```bash
 git clone https://github.com/ncalabro18/Chest-X-ray-Classifier
 cd Chest-X-ray-Classifier
 ```
 
-
-Create passwords for your environment using a text editor:
+Create passwords for your environment using a text editor.
 
 ```bash
 vim .env
@@ -60,17 +35,19 @@ Match variable names to:
 
 ```bash
 CLASSIFIER_API_KEY=...
-CLOUDFLARE_TUNNEL_TOKEN=...
-CF_API_TOKEN=...
 GRAFANA_ADMIN_PASSWORD=...
 INTERNAL_SECRET=...
 ```
+
+
 For local development ```CF_API_TOKEN``` and ```CLOUDFLARE_TUNNEL_TOKEN``` are not needed.
 The other 3 should be randomly initialized with a secure generator:
 ```bash
 openssl rand -base64 32
 ```
+<br>
 
+### Classifier Web Server
 #### Run Development Webapp
 
 ```bash
@@ -82,9 +59,13 @@ Local testing happens over http, not https.
 
 #### Run Production Webapp
 
-To deploy, edit the domain in caddyfile and create a cloudflare tunnel that points to http://caddy:80.
+To deploy, edit the domain in caddyfile and create a Cloudflare Tunnel that points to http://caddy:80. Terminate TLS at the tunnel. Add Cloudflare Tunnel and API tokens to ```.env```
 
-To access grafana, manually start the service. Visit at ```http://localhost:3000```. If deployed, remove it when not in use for stronger security.
+```bash
+CLOUDFLARE_TUNNEL_TOKEN=...
+CF_API_TOKEN=...
+```
+
 
 There are three other profiles:
   - monitoring starts Grafana
@@ -92,15 +73,17 @@ There are three other profiles:
   - lint runs Angular's TypeScript linter
 
 ```bash
-make cve_scan
-make monitoring
+make cve_scan   
+make monitoring # grafana only; prometheus is always up
 make lint
 ```
 
+Grafana default address:      ```http://localhost:3000```
+Development frontend address: ```http://localhost:14000```
 
-### Training
+<br>
 
-To train, clone the repository.
+### Model Training / Reproduction
 
 Recommended Python 3.11 for training
 
@@ -129,7 +112,7 @@ The script run_model.sh is useful to control GPU selection and python interprete
 
 This will output a best checkpoint, log file, and 2 CSV files
 
-
+<br>
 
 ## Architecture
 
@@ -181,6 +164,7 @@ The model gives final probabilities which can be tuned to optimize for different
 
 Attention maps and saliency maps are generated to display the decision making areas with the hightest weights for each positive finding.
 
+<br>
 
 ## Results
 
@@ -188,6 +172,7 @@ Mean AUC of 81.5% on a patient-level held-out validation set, competitive with p
 
 Future efforts will focus on multi-image analysis, increasing generalization with extra datsets, and improving maintainability.
 
+<br>
 
 ## Dataset
 
@@ -214,6 +199,7 @@ Mean: ```5798.3```
 
 Standard Deviation: ```5429.6```
 
+<br>
 
 ## Network / Microservice Diagram
 
@@ -277,6 +263,7 @@ Extended Final Project for a Computer Science Special Topics Elective: _Computin
 
 [Professor Wenjin's Course Page](https://www.cs.uml.edu/~wzhou/comp5300.html)
 
+<br>
 
 ## References
 
