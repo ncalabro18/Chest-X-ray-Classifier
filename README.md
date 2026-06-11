@@ -1,8 +1,31 @@
 # Chest X-ray Multi-Classifier
 
+### Table of Contents
+
+- [Description](#description)
+- [Local Execution](#local-execution)
+  - [Classifier Web Server](#classifier-web-server)
+    - [Run Development Webapp](#run-development-webapp)
+    - [Run Production Webapp](#run-production-webapp)
+  - [Model Training / Reproduction](#model-training--reproduction)
+- [Architecture](#architecture)
+  - [Data Preprocessing / Augmentation](#data-preprocessing--augmentation)
+    - [Geometric Augmentations](#geometric-augmentations)
+    - [Contrast & Intensity Augmentations](#contrast--intensity-augmentations)
+    - [Noise & Regularization](#noise--regularization)
+  - [Backbone](#backbone)
+  - [Head](#head)
+  - [Thresholding](#thresholding)
+  - [Model Output](#model-output)
+- [Results](#results)
+- [Dataset](#dataset)
+- [Network / Microservice Diagram](#network--microservice-diagram)
+- [Authors](#authors)
+
+
 ### Description
 
-Multi-label chest X-ray classifier screening 14 thoracic diseases simultaneously, achieving 81.7% mean AUC on the NIH CXR8 dataset including data reserved for thresholds optimizing for sensitivity. Deployed as a secure microservice stack with defense-in-depth network isolation, it features image submission, attention and saliency map compared to the original image, sensitivity-optimized thresholds, an interactive results page to display model accuracy metrics, and Grafana for realtime metric monitoring.
+Multi-label chest X-ray classifier screening 14 thoracic diseases simultaneously, achieving 81.7% mean AUC on the NIH CXR8 dataset including data reserved for thresholds optimizing for sensitivity. Deployed as a secure microservice stack with defense-in-depth network isolation, it features image submission, attention and saliency map compared with the original image, sensitivity-optimized thresholds, an interactive results page to display model accuracy metrics, and Grafana for realtime metric monitoring.
 
 Currently experimenting with additional thresholding ideas to indicate confidence.
 
@@ -12,7 +35,7 @@ Cardiomegaly - an enlarged heart
 
 The model is optimized for clinical relevance, using sensitivity threshold optimization: the model is more sensitive to anomalies, resulting in higher false positives but fewer false negatives. False negatives result in the patient being sent home with a disease; thus, the decision was made to optimize thresholds to prevent this.
 
-The latest feature includes an addition threshold used to indicate high confidence.
+The latest feature includes an additional threshold used to indicate high confidence.
 
 <br>
 
@@ -69,7 +92,7 @@ CF_API_TOKEN=...
 
 There are three other profiles:
   - monitoring starts Grafana
-  - cve_scan checks for common vulnerabilities and expsures
+  - cve_scan checks for common vulnerabilities and exposures
   - lint runs Angular's TypeScript linter
 
 ```bash
@@ -100,7 +123,7 @@ Beyond Python and pip dependencies there are 2 more downloads:
 
   __Note:__ Dataset is for training / validation purposes only. See [Web Server](#classifier-web-server)
 
-  [Custom Backbone Checkpoint](https://github.com/ncalabro18/Chest-X-ray-Classifier/releases/tag/checkpoint_file) (.2 GB)
+  [Custom Backbone Checkpoint](https://github.com/ncalabro18/Chest-X-ray-Classifier/releases/tag/checkpoint_file) (0.2 GB)
 
 
 
@@ -162,15 +185,27 @@ After probability scores are calculated, final thresholds are applied to aid in 
 
 The model gives final probabilities which can be tuned to optimize for different goals. For the final model, sensitivity optimization is utilized rather than f1 or Youden's J statistic.
 
-Attention maps and saliency maps are generated to display the decision making areas with the hightest weights for each positive finding.
+Attention maps and saliency maps are generated to display the decision making areas with the highest weights for each positive finding.
 
 <br>
 
 ## Results
 
-Mean AUC of 81.5% on a patient-level held-out validation set, competitive with published benchmarks on this dataset. Thresholds are optimized for sensitivity rather than F1, prioritizing recall to minimize missed diagnoses.
 
-Future efforts will focus on multi-image analysis, increasing generalization with extra datsets, and improving maintainability.
+See results parsed from the deployed model [here](https://classifier.ncalabro.net/results), featuring two clinically meaningful operating points. 
+
+
+_Best Results_
+
+With a patient-level split and no data reserved for thresholds, results reached just over 83% at 384p on Swin V2 Small.
+
+After reserving a held-out threshold set, AUC decreased to 81.7% while interpretability increased - this is the reported headline number, as it reflects performance with realistic, non-overfit thresholds. Mean AUC of 81.7% is comparable to common baselines on this dataset.
+
+
+&nbsp;_Note_&nbsp;&nbsp;-&nbsp;&nbsp; Hernia is excluded from the mean because it lacks enough validation data to be reliable.
+
+
+
 
 <br>
 
@@ -252,11 +287,7 @@ Instructed by Professor Wenjin Zhou
 
 Thank you for contributions to the documentation by:
 
-Anthony Klimas
-
-Luke MacVicar
-
-Hilary Jaen Rodriguez
+Hilary Jaen Rodriguez, Anthony Klimas, and Luke MacVicar, 
 
 
 Extended Final Project for a Computer Science Special Topics Elective: _Computing for Health and Medicine_
