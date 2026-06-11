@@ -1,5 +1,5 @@
 # © 2026 Nicholas J. Calabro. All rights reserved.
-# Chest X-ray Classifier - docker-compose.yml
+# Chest X-ray Multi Label Classifier - docker-compose.yml
 # use this file to deploy or locally test the AI model web interface
 # see README.md for instructions to execute this file
 # it also has a network topology digram to show how microservices communicate
@@ -26,6 +26,8 @@
 services:
 
   classifier:
+    profiles:
+      - deploy
     build:
       context: .
       dockerfile: Dockerfile.classifier
@@ -75,6 +77,8 @@ services:
   # web monitors classifier, ratelimits requests, raises exceptions to
   # invalid images, and serves as an extra layer of security
   web:
+    profiles:
+      - deploy
     build:
       context: .
       dockerfile: Dockerfile.web
@@ -117,6 +121,8 @@ services:
 
 
   frontend:
+    profiles:
+      - deploy
     build:
       context: ./frontend
       dockerfile: ../Dockerfile.frontend
@@ -151,9 +157,9 @@ services:
       start_period: 15s
 
 
-  ### Monitoring services that are always up ###
-
   prometheus:
+    profiles:
+      - deploy
     image: prom/prometheus:latest
     volumes:
       - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
@@ -165,6 +171,8 @@ services:
 
   # exports nginx promentheus metrics
   nginx-exporter:
+    profiles:
+      - deploy
     image: nginx/nginx-prometheus-exporter:latest
     command:
       - --nginx.scrape-uri=http://frontend:4000/stub_status
@@ -178,12 +186,8 @@ services:
       - monitoring
 
 
-  #### Begin Profile Services ####
-  # (not run with docker-compose up)
-
-  ### deploy profile ###
-  # Requires copying 2 environment variables into .env
-  # And setting up the tunnel in Zero-Trust web dashboard
+  # Cloudflare Tunnel
+  # requires an API and tunnel token in .env
   cloudflared:
     profiles:
       - deploy
