@@ -251,8 +251,8 @@ graph TB
     end
 
     subgraph dmz["dmz (internal)"]
-        frontend[frontend - Nginx serving Angular]
-        web[web - input sanitization + rate limit]
+        frontend[frontend - Nginx, Angular]
+        web[web - input sanitization]
     end
 
     subgraph backend["backend (internal)"]
