@@ -25,12 +25,11 @@
 
 ### Description
 
-Multi-label chest X-ray classifier screening 14 thoracic diseases simultaneously, achieving 81.7% mean AUC on the NIH CXR8 dataset including data reserved for thresholds optimizing for sensitivity. Deployed as a secure microservice stack with defense-in-depth network isolation, it features image submission, attention and saliency map compared with the original image, sensitivity-optimized thresholds, an interactive results page to display model accuracy metrics, and Grafana for realtime metric monitoring.
+Multi-label chest X-ray classifier screening 14 thoracic diseases simultaneously, achieving 81.7% mean AUC on the NIH ChestX-ray14 dataset including data reserved for thresholds optimizing for sensitivity. Deployed as a secure microservice stack with defense-in-depth network isolation, it features image submission, attention and saliency map compared with the original image, sensitivity-optimized thresholds, an interactive results page to display model accuracy metrics, and Grafana for realtime metric monitoring.
 
-Currently experimenting with additional thresholding ideas to indicate confidence.
 
 Cardiomegaly - an enlarged heart
-![Dashboard](assets/example_attention.png)
+![Attention Map](assets/example_attention.png)
 
 
 The model is optimized for clinical relevance, using sensitivity threshold optimization: the model is more sensitive to anomalies, resulting in higher false positives but fewer false negatives. False negatives result in the patient being sent home with a disease; thus, the decision was made to optimize thresholds to prevent this.
@@ -76,7 +75,7 @@ openssl rand -base64 32
 ```bash
 make dev
 ```
-Is all that is needed. Navigate to http://localhost
+Is all that is needed. Navigate to http://localhost:14000
 Local testing happens over http, not https.
 
 
@@ -178,7 +177,7 @@ Cross-attention then operates with num_classes learned query vectors against thi
 
 ### Thresholding
 
-After probability scores are calculated, final thresholds are applied to aid in diagnostic capabilities. These are selected to minimize false negatives, known as sensitivity optimization.
+After probability scores are calculated, final per-class thresholds are applied to aid in diagnostic interpretability. These are selected to minimize false negatives, known as sensitivity optimization. An extra threshold per-class set has been added which prioritizes specificity to reduce label noise. 
 
 
 ### Model Output
