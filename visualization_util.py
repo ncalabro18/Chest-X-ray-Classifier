@@ -5,6 +5,7 @@ import base64
 import io
 
 import numpy as np
+import pandas as pd
 import torch
 import torch.nn.functional as F
 import cv2
@@ -12,6 +13,58 @@ from PIL import Image
 
 from sklearn.metrics import multilabel_confusion_matrix, ConfusionMatrixDisplay
 import matplotlib.pyplot as plt
+
+def _get_class_index(class_name: str, class_names: list) -> int:
+    """Convert class name to index."""
+    try:
+        return class_names.index(class_name)
+    except ValueError:
+        raise ValueError(f"Class '{class_name}' not found in class names: {class_names}")
+
+def sort_predictions_by_ppv_npv(csv_path: str, predictions: dict, max_viz_classes: int = 5):
+    """
+    Sort positive and negative predictions by PPV and NPV respectively.
+    
+    Args:
+        csv_path: Path to per_class.csv (per_epoch.csv should be in same directory)
+        predictions: Dict of {class_name: {'probability': float, 'positive': bool}}
+        max_viz_classes: Maximum number of classes to return for each group
+    
+    Returns:
+        Tuple of (positive_classes, negative_classes) sorted by PPV/NPV
+    """
+    import os
+    
+    # Load CSVs
+    per_class = pd.read_csv(csv_path)
+    per_epoch = pd.read_csv(os.path.join(os.path.dirname(csv_path), 'per_epoch.csv'))
+    
+    # Get best epoch (highest val_auc)
+    best_epoch = per_epoch.sort_values('val_auc', ascending=False)['epoch'].iloc[0]
+    
+    # Filter to best epoch and create lookup dicts
+    per_class_best = per_class[per_class['epoch'] == best_epoch]
+    class_ppv = per_class_best.groupby('class')['ppv'].first().to_dict()
+    class_npv = per_class_best.groupby('class')['npv'].first().to_dict()
+    
+    # Sort positives by PPV descending
+    positive_classes = sorted(
+        [(cls_name, cls_name) for cls_name in predictions
+         if predictions[cls_name]['positive']],
+        key=lambda x: class_ppv.get(x[1], 0),
+        reverse=True
+    )[:max_viz_classes]
+    
+    # Sort negatives by NPV descending
+    negative_classes = sorted(
+        [(cls_name, cls_name) for cls_name in predictions
+         if not predictions[cls_name]['positive']],
+        key=lambda x: class_npv.get(x[1], 0),
+        reverse=True
+    )[:max_viz_classes]
+    
+    return positive_classes, negative_classes
+
 
 
 def _to_data_url(pil_img: Image.Image, fmt: str = "JPEG", quality: int = 85) -> str:
