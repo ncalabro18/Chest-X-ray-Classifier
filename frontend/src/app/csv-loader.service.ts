@@ -4,8 +4,8 @@ import Papa from 'papaparse';
 export interface PerClassRow {
   epoch: number;
   class: string;
-  threshold: number;
-  spec_threshold: number;
+  threshold_id: number;
+  threshold_value: number;
   auc: number;
   sens: number;
   spec: number;
@@ -17,11 +17,6 @@ export interface PerClassRow {
   fp: number;
   tn: number;
   fn: number;
-  spec_thresh_sens:       number;
-  spec_thresh_spec:       number;
-  spec_thresh_ppv:        number;
-  spec_thresh_npv:        number;
-  spec_thresh_alert_rate: number;
 }
 
 export interface PerEpochRow {
@@ -32,8 +27,6 @@ export interface PerEpochRow {
   val_loss: number;
   val_auc: number;
   val_f1: number;
-  val_thresh_sens: number;
-  val_thresh_spec: number;
   val_thresh_ppv: number;
   val_thresh_npv: number;
   val_thresh_alert_rate: number;
@@ -73,8 +66,8 @@ export class CsvLoaderService {
           const rows: PerClassRow[] = results.data.map((r: any) => ({
             epoch: Number(r['epoch']),
             class: String(r['class']),
-            threshold: Number(r['threshold']),
-            spec_threshold: Number(r['spec_threshold']),
+            threshold_id: Number(r.threshold_id),
+            threshold_value: Number(r.threshold_value),
             auc: Number(r['auc']),
             sens: Number(r['sens']),
             spec: Number(r['spec']),
@@ -86,12 +79,6 @@ export class CsvLoaderService {
             fp: Number(r['fp']),
             tn: Number(r['tn']),
             fn: Number(r['fn']),
-            spec_thresh_sens: Number(r['spec_thresh_sens']),
-            spec_thresh_spec: Number(r['spec_thresh_spec']),
-            spec_thresh_ppv: Number(r['spec_thresh_ppv']),
-            spec_thresh_npv: Number(r['spec_thresh_npv']),
-            spec_thresh_alert_rate: Number(r['spec_thresh_alert_rate'])
-            
           }));
           resolve(rows);
         },

@@ -101,9 +101,69 @@ export class ResultsComponent implements AfterViewInit {
       ])
   );
 
+  readonly selectedThresholdId = signal<number>(0);
+
+// Replace the existing classRowsByKey computed
+classRowsByKey = computed(() => {
+  const map = new Map<string, PerClassRow[]>();
+  for (const row of this.perClassRows()) {
+    const key = row.class.trim().replace(/ /g, '_');
+    if (!map.has(key)) map.set(key, []);
+    map.get(key)!.push(row);
+  }
+  return map;
+});
+
+selectedClassAllRows = computed(() => {
+  const cls = this.selectedClass();
+  const classRowsByKey = this.classRowsByKey();
+  const bestEpoch = this.bestEpochRow()?.epoch;
+  
+  if (!cls || bestEpoch == null) return [];
+  
+  // Transform the class name to match the map key
+  const key = cls.trim().replace(/ /g, '_');
+  return (classRowsByKey.get(key) ?? []).filter(r => r.epoch === bestEpoch);
+});
+
+// Available threshold IDs for the dropdown
+availableThresholdIds = computed<number[]>(() => {
+  const rows = this.selectedClassAllRows();
+  if (!rows || rows.length === 0) return [];
+
+  // Extract threshold_id, filter out null/undefined, ensure number
+  const ids = rows
+    .map(r => r.threshold_id)
+    .filter((id): id is number => id != null && typeof id === 'number');
+
+  // Deduplicate and sort
+  return Array.from(new Set(ids)).sort((a, b) => a - b);
+});
+
+selectedClassRow = computed(() => {
+  const rows = this.selectedClassAllRows();
+  const id = this.selectedThresholdId();
+  return rows.find(r => r.threshold_id === id) ?? rows[0] ?? null;
+});
+
+selectThresholdId(id: number): void {
+  this.selectedThresholdId.set(Number(id));
+  
+}
+
   readonly clinicalGroups = CLINICAL_GROUPS;
   CLASS_ORDER = CLASS_ORDER;
 
+  avgSensThreshSens = computed(() => this.macroAvg('sens'));
+  avgSensThreshSpec = computed(() => this.macroAvg('spec'));
+
+  private macroAvg(key: keyof PerClassRow): number {
+    const rows = this.perClassRows();
+    const vals = rows
+      .map((r) => this.toNum(r[key] as unknown))
+      .filter((v): v is number => v !== undefined);
+    return vals.length ? vals.reduce((a, b) => a + b, 0) / vals.length : 0;
+  }
 
   constructor(private csvLoader: CsvLoaderService) {
     effect(() => {
@@ -142,6 +202,7 @@ export class ResultsComponent implements AfterViewInit {
 
   selectClass(cls: string): void {
     this.selectedClass.set(cls);
+    this.selectedThresholdId.set(0); 
   }
 
   toggleGroup(key: string): void {
@@ -157,21 +218,7 @@ export class ResultsComponent implements AfterViewInit {
   sortedEpochRows = computed(() =>
     [...this.perEpochRows()].sort((a, b) => a.epoch - b.epoch)
   );
-
-  classRowsByKey = computed(() => {
-    const map = new Map<string, PerClassRow>();
-    for (const row of this.perClassRows()) {
-      const key = row.class.trim().replace(/ /g, '_');
-      map.set(key, row);
-    }
-    return map;
-  });
-
-  selectedClassRow = computed(() => {
-    const raw = this.selectedClass();
-    const key = raw.trim().replace(/ /g, '_');
-    return this.classRowsByKey().get(key) ?? null;
-  });
+  
 
   bestEpochRow = computed(() => {
     const metric = this.selectedPriority();
@@ -251,6 +298,7 @@ export class ResultsComponent implements AfterViewInit {
   alertRateWarning(rate: number): boolean {
     return rate > 0.3;
   }
+
 
   globalConfusion = computed(() => {
     const rows = this.perClassRows();

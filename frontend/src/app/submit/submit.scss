@@ -634,7 +634,7 @@ $grid-cols: 160px 1fr 70px 70px 70px 80px;
 .findings-colheaders {
   display: grid;
   grid-template-columns: $grid-cols;
-  padding: 0 1.25rem 4px;
+  padding: 1px 1.25rem 4px;
   gap: 10px; 
   align-items: center;
   text-align: center;

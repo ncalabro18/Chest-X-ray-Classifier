@@ -195,9 +195,15 @@
             <span class="findings-colheader findings-colheader--name">Finding</span>
             <span class="findings-colheader findings-colheader--bar"></span>
             <span class="findings-colheader findings-colheader--prob">Score</span>
-            <span class="findings-colheader findings-colheader--thr">Sensitivity Threshold</span>
-            <!-- <span class="findings-colheader findings-colheader--thr">Diff</span> -->
-            <span class="findings-colheader findings-colheader--thr">Specificity Threshold</span>
+            <span 
+              class="findings-colheader findings-colheader--prob"
+              title="
+              Positive Predictive Value (PPV): When model predicts positive, percentage that are correct. Shown under positve findings.
+              Negative Predictive Value (NPV): When model predicts negative, percentage that are correct. Shown under negative findings."
+            >
+              PPV / NPV
+            </span>
+            <span class="findings-colheader findings-colheader--thr">Confidence</span>
             <span class="findings-colheader findings-colheader--badge"></span>
           </div>
 
@@ -215,7 +221,12 @@
               
 
               @for (entry of positiveFindings(); track entry[0]) {
-                <div class="finding finding--flagged">
+                <div
+                  class="finding finding--flagged"
+                  style="position: relative"
+                  (mouseenter)="hoveredClass.set(entry[0])"
+                  (mouseleave)="hoveredClass.set(null)"
+                >
                   <div class="findingname-col">
                     <span
                       class="findingflag-dot"
@@ -237,24 +248,31 @@
                         [style.left]="thresholdLeft(entry[1].threshold)"
                         [attr.title]="'Threshold ' + pct(entry[1].threshold)"
                       ></div>
-                      <div
-                        class="threshold-marker threshold-marker--spec"
-                        [style.left]="thresholdLeft(entry[1].spec_threshold)"
-                        title="High confidence threshold"
-                      ></div>
+                      @if (operatingPoints().get(entry[0])?.spec) {
+                        <div
+                          class="threshold-marker threshold-marker--spec"
+                          [style.left]="thresholdLeft(operatingPoints().get(entry[0])!.spec!.threshold_value)"
+                          title="High confidence threshold"
+                        ></div>
+                      }
                     </div>
                   </div>
 
                   <span class="findingprob">{{ pct(entry[1].probability) }}</span>
-                  <span class="findingthreshold">{{ pct(entry[1].threshold) }}</span>
+                  <span class="findingthreshold">{{ approxConfidencePercentage(entry[0], entry[1]) }}</span>
+
 
                   <span
                     class="findingbadge"
-                    [class.findingbadge--highconf]="isHighConfidence(entry[1])"
-                    [class.findingbadge--flagged]="!isHighConfidence(entry[1])"
+                    [class.findingbadge--highconf]="isHighConfidence(entry[0], entry[1])"
+                    [class.findingbadge--flagged]="!isHighConfidence(entry[0], entry[1])"
                   >
-                    {{ isHighConfidence(entry[1]) ? 'High confidence' : 'Possible' }}
+                  {{ isHighConfidence(entry[0], entry[1]) ? 'High confidence' : 'Possible' }}
                   </span>
+
+                  @if (hoveredClass() === entry[0]) {
+                    <app-operating-point-tooltip [row]="operatingPoints().get(entry[0])?.closest ?? null" />
+                  }
 
                 </div>
               }
@@ -275,7 +293,12 @@
 
 
             @for (entry of negativeFindings(); track entry[0]) {
-              <div class="finding">
+              <div
+                class="finding"
+                style="position: relative"
+                (mouseenter)="hoveredClass.set(entry[0])"
+                (mouseleave)="hoveredClass.set(null)"
+              >
                 <div class="findingname-col">
                   <span class="findingflag-dot findingflag-dot--neg" aria-hidden="true"></span>
                   <span class="findingname findingname--dim">{{ entry[0] }}</span>
@@ -292,20 +315,30 @@
                       [style.left]="thresholdLeft(entry[1].threshold)"
                       title="Sensitivity threshold"
                     ></div>
-                    <div
-                      class="threshold-marker threshold-marker--spec"
-                      [style.left]="thresholdLeft(entry[1].spec_threshold)"
-                      title="High confidence threshold"
-                    ></div>
+                    @if (operatingPoints().get(entry[0])?.spec) {
+                      <div
+                        class="threshold-marker threshold-marker--spec"
+                        [style.left]="thresholdLeft(operatingPoints().get(entry[0])!.spec!.threshold_value)"
+                        title="High confidence threshold"
+                      ></div>
+                    }
                   </div>
                 </div>
 
                 <span class="findingprob">{{ pct(entry[1].probability) }}</span>
-                <span class="findingthreshold">{{ pct(entry[1].threshold) }}</span>
+                <span class="findingthreshold">{{ approxConfidencePercentage(entry[0], entry[1]) }}</span>
+
 
                 <span class="findingbadge">
-                  {{ pct(entry[1].probability - entry[1].threshold) }}
+                  <!-- {{ pct(entry[1].probability - entry[1].threshold) }} 
+                  prior implementation showed a diff rather than precise threshold  
+                  -->
                 </span>
+
+
+                  @if (hoveredClass() === entry[0]) {
+                    <app-operating-point-tooltip [row]="operatingPoints().get(entry[0])?.closest ?? null" />
+                  }
 
               </div>
             }
@@ -385,7 +418,7 @@ For research and investigational use only. Not FDA approved.
 This system is not intended to replace radiologist interpretation or 
 clinical decision-making. Thresholds are tuned for sensitivity to minimize missed findings (amber marker)
 and specificity for high-confidence flags (blue marker).
-Thresholds have statistical backing but aren't linearly interpretable
+Hernia lacks adequate training data and its accuracy has high error.
             </p>
           </div>
 

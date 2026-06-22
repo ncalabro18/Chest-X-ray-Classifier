@@ -1,0 +1,12 @@
+@if (row) {
+  <div class="op-tooltip" role="tooltip">
+    <div class="op-tooltip-grid">
+      <span>Sens</span><span>{{ pct(row.sens) }}</span>
+      <span>Spec</span><span>{{ pct(row.spec) }}</span>
+      <span>PPV</span><span>{{ pct(row.ppv) }}</span>
+      <span>NPV</span><span>{{ pct(row.npv) }}</span>
+      <span>Alert rate</span><span>{{ pct(row.alert_rate) }}</span>
+      <span>Threshold</span><span>{{ row.threshold_value.toFixed(3) }}</span>
+    </div>
+  </div>
+}

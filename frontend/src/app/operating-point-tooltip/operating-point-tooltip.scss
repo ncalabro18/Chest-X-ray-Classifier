@@ -1,0 +1,29 @@
+// operating-point-tooltip.component.scss
+.op-tooltip {
+  position: absolute;
+  bottom: calc(100% + 8px);
+  left: 0;
+  z-index: 50;
+  pointer-events: none;
+  background: var(--c-surface, #1a1a1a);
+  border: 1px solid var(--c-border, rgba(255, 255, 255, 0.1));
+  border-radius: 8px;
+  padding: 10px 12px;
+  font-size: 12px;
+  white-space: nowrap;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.3);
+}
+.op-tooltip-label {
+  font-weight: 600;
+  margin: 0 0 4px;
+  color: var(--c-text-mid);
+}
+.op-tooltip-grid {
+  display: grid;
+  grid-template-columns: auto auto;
+  gap: 2px 10px;
+  margin-bottom: 8px;
+}
+.op-tooltip-grid:last-child {
+  margin-bottom: 0;
+}

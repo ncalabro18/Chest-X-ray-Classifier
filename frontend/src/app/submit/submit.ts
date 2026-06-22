@@ -10,7 +10,10 @@ import { CommonModule } from '@angular/common';
 import { HttpClientModule } from '@angular/common/http';
 import { Subscription, interval } from 'rxjs';
 import { ClassifierStateService } from '../classifier-state';
-
+import { inject } from '@angular/core';
+import { OperatingPoint } from '../operating-point';
+import { PerClassRow } from '../csv-loader.service';
+import { OperatingPointTooltip } from '../operating-point-tooltip/operating-point-tooltip';
 
 // Types
 
@@ -45,7 +48,7 @@ export interface SubmitResponse {
 @Component({
   selector: 'app-submit',
   standalone: true,
-  imports: [CommonModule, HttpClientModule],
+  imports: [CommonModule, HttpClientModule, OperatingPointTooltip ],
   templateUrl: './submit.html',
   styleUrl: './submit.scss',
 })
@@ -58,14 +61,24 @@ export class SubmitComponent implements OnInit, OnDestroy {
 
   imagePreviewUrl = signal<string | null>(null);
 
+  hoveredClass    = signal<string | null>(null);
+  operatingPoints = signal<Map<string, {
+    closest: PerClassRow | null;
+    spec: PerClassRow | null
+  }>>(new Map());
+  private operatingPointService = inject(OperatingPoint);
 
   highConfidenceFindings = computed(() =>
     this.positiveFindings().filter(
       ([, p]) => p.probability >= p.spec_threshold
     )
   );
-  isHighConfidence(p: Prediction): boolean {
-    return p.probability >= p.spec_threshold;
+  isHighConfidence(className: string, p: Prediction): boolean {
+    const entry = this.operatingPoints().get(className);
+    if (!entry?.closest) return false;
+    
+    // High confidence = PPV >= 90% (tune this threshold)
+    return entry.closest.ppv >= 0.90;
   }
 
   // State
@@ -98,6 +111,14 @@ export class SubmitComponent implements OnInit, OnDestroy {
     return cls ? (maps[cls] ?? null) : null;
   });
 
+
+  approxConfidencePercentage(className: string, p: Prediction): string {
+    const row = this.operatingPoints().get(className)?.closest;
+    if (!row) return '—';
+    return this.pct(p.positive ? row.ppv : row.npv);
+  }
+  
+
   // Update positiveClassesWithMaps to union both map sets:
   positiveClassesWithMaps = computed(() =>
     this.positiveFindings()
@@ -109,18 +130,29 @@ export class SubmitComponent implements OnInit, OnDestroy {
     this.selectedAttentionClass.set(cls);
   }
 
-
   // Derived
   positiveFindings = computed(() =>
     Object.entries(this.result()?.predictions ?? {})
       .filter(([, p]) => p.positive)
-      .sort(([, a], [, b]) => b.probability - a.probability)
+      .sort(([clsA, a], [clsB, b]) => {
+        // Get PPV from closest row for each class
+        const ppvA = this.operatingPoints().get(clsA)?.closest?.ppv ?? 0;
+        const ppvB = this.operatingPoints().get(clsB)?.closest?.ppv ?? 0;
+        // Sort by PPV descending
+        return ppvB - ppvA;
+      })
   );
 
   negativeFindings = computed(() =>
     Object.entries(this.result()?.predictions ?? {})
       .filter(([, p]) => !p.positive)
-      .sort(([, a], [, b]) => b.probability - a.probability)
+      .sort(([clsA, a], [clsB, b]) => {
+        // Get NPV from closest row for each class
+        const npvA = this.operatingPoints().get(clsA)?.closest?.npv ?? 0;
+        const npvB = this.operatingPoints().get(clsB)?.closest?.npv ?? 0;
+        // Sort by NPV descending
+        return npvB - npvA;
+      })
   );
 
   positiveCount = computed(() => this.positiveFindings().length);
@@ -166,8 +198,6 @@ export class SubmitComponent implements OnInit, OnDestroy {
   setView(v: ViewPosition): void {
     this.selectedView.set(v);
   }
-
-  // Submit
   submit(): void {
     const file = this.selectedFile();
     if (!file || this.stateService.submitState() === 'loading') return;
@@ -178,23 +208,40 @@ export class SubmitComponent implements OnInit, OnDestroy {
 
     this.errorMessage.set(null);
     this.result.set(null);
+    this.stateService.submitState.set('loading');
 
-    this.stateService.submitState.set("loading")
     this.http.post<SubmitResponse>(this.SUBMIT_URL, form).subscribe({
       next: (res) => {
         this.result.set(res.classifier_response);
         this.stateService.sidebarOpen.set(false);
-        this.stateService.submitState.set("success")
+        this.stateService.submitState.set('success');
+        this.preloadOperatingPoints(res.classifier_response);  // ← add this
       },
       error: (err: HttpErrorResponse) => {
-        this.stateService.submitState.set("error")
-
+        this.stateService.submitState.set('error');
         this.errorMessage.set(
           err.error?.detail ?? 'Server error - check classifier logs.');
       },
     });
   }
 
+  
+  private async preloadOperatingPoints(payload: ClassifierPayload): Promise<void> {
+    const entries = await Promise.all(
+      Object.entries(payload.predictions).map(async ([cls, prediction]) => {
+        const [closest, spec] = await Promise.all([
+          this.operatingPointService.getClosestRow(cls, prediction.probability),
+          this.operatingPointService.getSpecRow(cls),
+        ]);
+        return [cls, { closest, spec }] as const;
+      })
+    );
+    this.operatingPoints.set(new Map(entries));
+  }
+
+
+
+ 
 
   ngOnInit(): void {
     this.stateService.pollStatus();
@@ -230,6 +277,8 @@ export class SubmitComponent implements OnInit, OnDestroy {
     if (prev) URL.revokeObjectURL(prev);
     this.imagePreviewUrl.set(null);
 
+    this.operatingPoints.set(new Map());
+    this.hoveredClass.set(null);
     this.stateService.submitState.set('idle');
     this.selectedFile.set(null);
     this.activeMapType.set('attention');
