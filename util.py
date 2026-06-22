@@ -25,6 +25,7 @@ import pandas as pd
 import numpy as np
 
 from classes import ALL_CLASSES, MIN_VAL_POSITIVES, NO_FINDING_COL, NUM_CLASSES
+from classes import THRESHOLD_COUNT
 
 # Check point file labels that aren't required
 EXPECTED_MISSING = {
@@ -127,10 +128,6 @@ class PerEpochCSVWriter:
                 "epoch",
                 "tr_loss", "tr_auc", "tr_f1",
                 "val_loss", "val_auc", "val_f1",
-                "val_thresh_sens", "val_thresh_spec", "val_thresh_ppv",
-                "val_thresh_npv", "val_thresh_alert_rate",
-                "val_spec_thresh_sens", "val_spec_thresh_spec", "val_spec_thresh_ppv",  # NEW
-                "val_spec_thresh_npv", "val_spec_thresh_alert_rate",                    # NEW
             ] + [f"{c}_auc" for c in ALL_CLASSES] + [
                 f"{c}_thresh" for c in ALL_CLASSES
             ])
@@ -140,24 +137,14 @@ class PerEpochCSVWriter:
         epoch,
         tr_loss, tr_auc, tr_f1,
         val_loss, val_auc, val_f1,
-        val_thresh_sens, val_thresh_spec, val_thresh_ppv,
-        val_thresh_npv, val_thresh_alert_rate,
-        val_spec_thresh_sens, val_spec_thresh_spec, val_spec_thresh_ppv,  # NEW
-        val_spec_thresh_npv, val_spec_thresh_alert_rate,                   # NEW
         per_class_auc,
-        best_thresh,
     ):
         row = [
             epoch,
             tr_loss, tr_auc, tr_f1,
             val_loss, val_auc, val_f1,
-            val_thresh_sens, val_thresh_spec, val_thresh_ppv,
-            val_thresh_npv, val_thresh_alert_rate,
-            val_spec_thresh_sens, val_spec_thresh_spec, val_spec_thresh_ppv,  # NEW
-            val_spec_thresh_npv, val_spec_thresh_alert_rate,                   # NEW
         ]
         row += [per_class_auc.get(c, "") for c in ALL_CLASSES]
-        row += [float(best_thresh[i]) if best_thresh[i] > 0 else 0.5 for i in range(NUM_CLASSES)]
         self._writer.writerow(row)
         self._f.flush()
 
@@ -182,8 +169,8 @@ class PerClassCSVWriter:
             self._writer.writerow([
                 "epoch",
                 "class",
-                "threshold",
-                "spec_threshold",
+                "threshold_id",
+                "threshold_value",
                 "auc",
                 "sens",
                 "spec",
@@ -195,42 +182,34 @@ class PerClassCSVWriter:
                 "fp",
                 "tn",
                 "fn",
-                "spec_thresh_sens",
-                "spec_thresh_spec", 
-                "spec_thresh_ppv",
-                "spec_thresh_npv",
-                "spec_thresh_alert_rate",
             ])
 
-    def write_class_row(self, epoch, class_name, metrics, auc=None):
-        self._writer.writerow([
-            epoch,
-            class_name,
-            metrics.get("threshold", ""),
-            metrics.get("spec_threshold", ""),
-            auc if auc is not None else metrics.get("auc", ""),
-            metrics.get("sens", ""),
-            metrics.get("spec", ""),
-            metrics.get("ppv", ""),
-            metrics.get("npv", ""),
-            metrics.get("alert_rate", ""),
-            metrics.get("ece", ""),
-            metrics.get("tp", ""),
-            metrics.get("fp", ""),
-            metrics.get("tn", ""),
-            metrics.get("fn", ""),
-            metrics.get("spec_thresh_sens", ""),
-            metrics.get("spec_thresh_spec", ""),
-            metrics.get("spec_thresh_ppv", ""),
-            metrics.get("spec_thresh_npv", ""),
-            metrics.get("spec_thresh_alert_rate", "")
-        ])
+    def write_class_row(self, epoch, class_name, metrics_list, auc=None):
+        for metrics in metrics_list:
+            self._writer.writerow([
+                epoch,
+                class_name,
+                metrics.get("threshold_id", ""),
+                metrics.get("threshold_value", ""),
+                auc if auc is not None else metrics.get("auc", ""),
+                metrics.get("sens", ""),
+                metrics.get("spec", ""),
+                metrics.get("ppv", ""),
+                metrics.get("npv", ""),
+                metrics.get("alert_rate", ""),
+                metrics.get("ece", ""),
+                metrics.get("tp", ""),
+                metrics.get("fp", ""),
+                metrics.get("tn", ""),
+                metrics.get("fn", ""),
+            ])
         self._f.flush()
 
     def write_all(self, epoch, per_class_report, per_class_auc=None):
         per_class_auc = per_class_auc or {}
-        for cls, metrics in per_class_report.items():
-            self.write_class_row(epoch, cls, metrics, per_class_auc.get(cls))
+        for cls, metrics_list in per_class_report.items():
+            self.write_class_row(epoch, cls, metrics_list, per_class_auc.get(cls))
+
 
     def close(self):
         if not self._f.closed:
@@ -269,7 +248,9 @@ def compute_model_metrics(labels, probs, best_thresh):
         
         # Use the current best_thresh if available, else 0.5
         # best_thresh is captured from the outer scope
-        t = best_thresh[c] if best_thresh is not None and best_thresh[c] > 0 else 0.5
+        t = float(
+            best_thresh[0].thresholds[c]
+        ) if best_thresh is not None and best_thresh[0].thresholds[c] > 0 else 0.5
         preds = (probs[:, c] >= t).astype(int)
         
         f1 = f1_score(col, preds, zero_division=0)
@@ -280,9 +261,8 @@ def compute_model_metrics(labels, probs, best_thresh):
 
 
 
-
 # In theory, these parameters should not need to be printed,
-# they should only effect tuning if it had been misconfigureds
+# they should only effect tuning if it had been misconfigured
 # Adding anyways to be thorough
 def print_util_parameters():
     print("Utility Parameters:")

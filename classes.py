@@ -24,6 +24,10 @@ NO_FINDING_COL = ALL_CLASSES.index("No Finding")
 
 NUM_CLASSES = len(ALL_CLASSES)
 
+THRESHOLD_COUNT        = 32
+
+SENS_THRESHOLD_ID = 0
+SPEC_THRESHOLD_ID = THRESHOLD_COUNT - 1
 
 # Minimum number of value needed to evaluate a catagory's AUC
 # to avoid unreliable estimates and early stopping

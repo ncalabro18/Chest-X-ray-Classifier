@@ -48,11 +48,10 @@ from dataloader import (
 import torch
 from torch.utils.data import DataLoader, WeightedRandomSampler
 from sklearn.preprocessing import MultiLabelBinarizer
-from torch.amp import autocast
 from tqdm import tqdm
 
 from classes import (
-    ALL_CLASSES, NO_FINDING_COL, NUM_CLASSES, 
+    ALL_CLASSES, NO_FINDING_COL, NUM_CLASSES, THRESHOLD_COUNT, 
 )
 
 from dataset import (
@@ -69,16 +68,16 @@ from architecture import (
     print_architecture_parameters, tta_predict,
 )
 
-from thresholding import fit_thresholds, compute_threshold_metrics
+from thresholding import PerClassThreshold, fit_thresholds, compute_threshold_metrics, print_thresholding_parameters
 from util import (
     compute_model_metrics, init_device, init_metadata,
     print_util_parameters,
     PerClassCSVWriter, PerEpochCSVWriter
 )
+from visualization_util import plot_confusion_matrices
 
 # From Microsoft's Github on SwinV2
 from swin_transformer_v2 import SwinTransformerV2
-from visualization_util import plot_confusion_matrices
 
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 
@@ -143,10 +142,13 @@ def print_train_parameters():
 
     print("  CHECKPOINT_INTERVAL", CHECKPOINT_INTERVAL)
 
+    return desc
+
 ### Main Model Driver ###
 def main():
     # For logging & tuning purposes
-    print_train_parameters()
+    desc = print_train_parameters()
+    print_thresholding_parameters()
     print_architecture_parameters()
     print_dataset_parameters()
     print_dataloader_parameters()
@@ -247,7 +249,7 @@ def main():
                 n_samples += imgs.size(0)
 
 
-                with autocast(device_type="cuda", dtype=torch.bfloat16, enabled=True):
+                with torch.autocast(device_type="cuda", dtype=torch.bfloat16, enabled=True):
                     if train:
                         logits = active_model(imgs, views)
                         probs = torch.sigmoid(logits)
@@ -310,11 +312,12 @@ def main():
     # CSV log files    
 
     best_val = 0.0
-    best_thresh = np.zeros(NUM_CLASSES)
     thresh_report = {}
 
     no_improve = 0
     start_epoch = 1
+    best_thresh = [PerClassThreshold() for _ in range(THRESHOLD_COUNT)]
+
 
     if RESUME_FILE:
         if not os.path.exists(RESUME_FILE):
@@ -333,7 +336,12 @@ def main():
 
         # Restore thresholds from best model file if it exists
         if os.path.exists(MODEL_OUTPUT_FILE):
-            best_thresh = classifier.load_thresholds(MODEL_OUTPUT_FILE)
+            flat = classifier.load_thresholds(MODEL_OUTPUT_FILE)
+            best_thresh = []
+            for _ in range(THRESHOLD_COUNT):
+                pt = PerClassThreshold()
+                pt.thresholds = flat.copy()
+                best_thresh.append(pt)
             print(f"  Restored thresholds from {MODEL_OUTPUT_FILE}")
 
         scheduler.unfreeze_scheduler.restore_to_epoch(start_epoch)
@@ -383,11 +391,12 @@ def main():
             print(f"    {cls:<20s} {auc:.3f}")
 
 
-        best_thresh, spec_thresh, _, _, thresh_report = fit_thresholds(
+        thresh_list, _, _, thresh_report = fit_thresholds(
             classifier.ema_model.module,
             thresh_loader,
             device
         )
+        best_thresh = thresh_list 
 
         thresh_metrics = compute_threshold_metrics(thresh_report)
         val_thresh_sens       = thresh_metrics["val_thresh_sens"]
@@ -395,22 +404,13 @@ def main():
         val_thresh_ppv        = thresh_metrics["val_thresh_ppv"]
         val_thresh_npv        = thresh_metrics["val_thresh_npv"]
         val_thresh_alert_rate = thresh_metrics["val_thresh_alert_rate"]
-        val_spec_thresh_sens  = thresh_metrics["val_spec_thresh_sens"]
-        val_spec_thresh_spec  = thresh_metrics["val_spec_thresh_spec"]
-        val_spec_thresh_ppv   = thresh_metrics["val_spec_thresh_ppv"]
-        val_spec_thresh_npv   = thresh_metrics["val_spec_thresh_npv"]
-        val_spec_thresh_alert_rate = thresh_metrics["val_spec_thresh_alert_rate"]
+        
 
         epoch_logger.write_epoch(
             epoch,
             tr_loss, tr_auc, tr_f1,
             val_loss, val_auc, val_f1,
-            val_thresh_sens, val_thresh_spec, val_thresh_ppv,
-            val_thresh_npv, val_thresh_alert_rate,
-            val_spec_thresh_sens, val_spec_thresh_spec, val_spec_thresh_ppv,
-            val_spec_thresh_npv, val_spec_thresh_alert_rate,
             per_class,
-            best_thresh,
         )
         class_logger.write_all(
             epoch,
@@ -436,8 +436,7 @@ def main():
             )
             ckpt_file.save(
                 classifier=classifier,
-                thresholds=best_thresh,
-                spec_thresholds=spec_thresh,
+                thresholds=best_thresh[0].thresholds,
                 temperature_scaler=temperature_scaler
             )
 
@@ -465,12 +464,6 @@ def main():
     class_logger.close()
     print("Done. Best val AUC:", round(best_val, 4))
 
-    plot_confusion_matrices(
-        val_labels,
-        val_probs, 
-        best_thresh,
-        ALL_CLASSES,
-    )
 
     if scheduler.is_swa():
         torch.optim.swa_utils.update_bn(
@@ -487,8 +480,7 @@ def main():
 
         ckpt_file.save_final(
             scheduler.swa_model.module.state_dict(),
-            best_thresh=best_thresh,
-            spec_thresholds=spec_thresh,
+            thresholds=best_thresh[0].thresholds,
             temperature_scaler=classifier.temperature_scaler
         )
         print(f"Temperature saved: {temperature_scaler.temps.mean().item():.4f}")
@@ -496,7 +488,8 @@ def main():
         ckpt = classifier.load_best_checkpoint(MODEL_OUTPUT_FILE)
         print("view_scale:", classifier.view_scale())
         print(f"Temperature saved: {temperature_scaler.temps.mean().item():.4f}")
-
+    
+    print("Run Description: ", desc)
     print("End time: ", datetime.datetime.now())
 
 

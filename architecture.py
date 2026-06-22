@@ -235,8 +235,7 @@ class SwinWithView(torch.nn.Module):
             # Pool down to same spatial size as final stage (7x7)
             feat_2d = torch.nn.functional.adaptive_avg_pool2d(feat_2d, output_size=7)
             projected = proj(feat_2d).flatten(2).transpose(1, 2)
-            gate = 1.0 + torch.tanh(self.stage_gates[i])
-            stage_tokens.append(projected * gate)
+            stage_tokens.append(projected)
 
         x_normed = self.backbone.norm(x)
 
@@ -247,6 +246,13 @@ class SwinWithView(torch.nn.Module):
         )
         
         all_tokens = self.class_norm(all_tokens)
+
+        seg_sizes = [t.shape[1] for t in stage_tokens] + [x_normed.shape[1]]
+        segments = list(all_tokens.split(seg_sizes, dim=1))
+        for i in range(len(self.stage_projs)):
+            gate = 1.0 + torch.tanh(self.stage_gates[i])
+            segments[i] = segments[i] * gate
+        all_tokens = torch.cat(segments, dim=1)
         
         # Class query cross-attention over all scales simultaneously
         B = all_tokens.size(0)
