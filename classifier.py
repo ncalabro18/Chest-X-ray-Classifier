@@ -32,7 +32,7 @@ from prometheus_client import (Counter, Histogram, start_http_server)
 from classes import ALL_CLASSES, NUM_CLASSES
 from dataset import PerImageStandardize, make_value_tf
 from architecture import MultiClassifier, IMAGE_SIZE, tta_predict
-from visualization_util import generate_attention_map, generate_gradient_saliency
+from visualization_util import _get_class_index, generate_attention_map, generate_gradient_saliency, sort_predictions_by_ppv_npv
 
 _viz_executor = ThreadPoolExecutor(max_workers=2)
 MODEL_OUTPUT_FILE = "swin_cxr8_best.pth"
@@ -147,10 +147,15 @@ async def generate_maps_async(model, tensor, view_tensor, pil_img, positive_clas
     attention_maps, saliency_maps = {}, {}
 
     for c, cls_name in positive_classes:
+        class_idx = _get_class_index(c, ALL_CLASSES)
+
         try:
             attention_maps[cls_name] = await loop.run_in_executor(
                 _viz_executor,
-                lambda c=c: generate_attention_map(model, tensor, view_tensor, pil_img, c, skip_forward=True)
+                lambda c=c: generate_attention_map(
+                    model, tensor, view_tensor,
+                    pil_img, class_idx, skip_forward=True
+                )
             )
         except Exception as exc:
             ATTENTION_MAP_ERROR.labels(view=view).inc()
@@ -159,7 +164,9 @@ async def generate_maps_async(model, tensor, view_tensor, pil_img, positive_clas
         try:
             saliency_maps[cls_name] = await loop.run_in_executor(
                 _viz_executor,
-                lambda c=c: generate_gradient_saliency(model, tensor, view_tensor, pil_img, c)
+                lambda c=c: generate_gradient_saliency(
+                    model, tensor, view_tensor, pil_img, class_idx
+                )
             )
         except Exception as exc:
             SALIENCY_MAP_ERROR.labels(view=view).inc()
@@ -236,12 +243,11 @@ async def classify_image(
         raise
 
 
-    positive_classes = sorted(
-        [(c, cls_name) for c, cls_name in enumerate(ALL_CLASSES)
-         if predictions[cls_name]["positive"]],
-        key=lambda x: predictions[x[1]]["probability"],
-        reverse=True
-    )[:MAX_VIZ_CLASSES]
+    positives, _ = sort_predictions_by_ppv_npv(
+        'per_class.csv',
+        predictions,
+        max_viz_classes=5
+    )
 
     # Generate attention and saliency maps and record latency
     pre_map_gen_time = time.perf_counter()
@@ -249,7 +255,7 @@ async def classify_image(
         model=model,
         tensor=tensor, view_tensor=view_tensor,
         pil_img=pil_img,
-        positive_classes=positive_classes,
+        positive_classes=positives,
         view=view
     )
     MAP_GENERATION_LATENCY.observe(time.perf_counter() - pre_map_gen_time)
