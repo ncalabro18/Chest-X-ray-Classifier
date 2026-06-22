@@ -75,7 +75,8 @@ openssl rand -base64 32
 ```bash
 make dev
 ```
-Is all that is needed. Navigate to http://localhost:14000
+Will start services for local development.
+Navigate to http://localhost:14000
 Local testing happens over http, not https.
 
 
